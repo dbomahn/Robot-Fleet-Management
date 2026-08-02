@@ -1,0 +1,2 @@
+"""Simulated robot behaviour placeholder."""
+

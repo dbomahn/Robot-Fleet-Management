@@ -1,0 +1,8 @@
+services:
+  collision-monitor:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    # RabbitMQ will be added when the transport adapter is implemented.
+
