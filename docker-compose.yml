@@ -1,8 +1,22 @@
 services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   collision-monitor:
     build: .
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
     env_file:
       - path: .env
         required: false
-    # RabbitMQ will be added when the transport adapter is implemented.
-
+    environment:
+      COLLISION_MONITOR_RABBITMQ_URL: amqp://guest:guest@rabbitmq/

@@ -1,5 +1,3 @@
-"""Input-boundary and internal domain models."""
-
 from __future__ import annotations
 
 import math
@@ -61,6 +59,16 @@ class Action(StrEnum):
     RESUME = "Resume"
 
 
+class DecisionSource(StrEnum):
+    """The mechanism that produced a robot action."""
+
+    CP_SAT = "cp_sat"
+    HEURISTIC = "heuristic"
+    REPAIR = "repair"
+    FAIL_SAFE = "fail_safe"
+    POLICY = "policy"
+
+
 @dataclass(frozen=True, slots=True)
 class RobotSnapshot:
     """A parsed state enriched with monitor-local observations."""
@@ -99,6 +107,7 @@ class RobotDecision:
     action: Action
     reason_codes: tuple[str, ...]
     tick_id: str
+    decision_source: DecisionSource
     diagnostic_metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
