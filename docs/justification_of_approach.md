@@ -19,7 +19,7 @@ The implemented decision process is:
 
 This is a **component-decomposed matheuristic**: the feasibility model is exact, small components are optimised with a mathematical-programming solver, and a bounded heuristic protects the service-time budget when exact optimisation is unsuitable.
 
-The deadline strongly influenced the scope. I prioritised correct geometry, explicit feasibility constraints, deterministic behaviour, adversarial tests, observability and a complete runnable service. I did not implement route replanning, full multi-agent path finding, a long rolling horizon, Large Neighbourhood Search or Benders decomposition. Those methods would require additional information and validation effort without improving the most important deliverable: a safe, understandable and reproducible `Pause`/`Resume` monitor.
+The three-day deadline strongly influenced the scope. I prioritised correct geometry, explicit feasibility constraints, deterministic behaviour, adversarial tests, observability and a complete runnable service. I did not implement route replanning, full multi-agent path finding, a long rolling horizon, Large Neighbourhood Search or Benders decomposition. Those methods would require additional information and validation effort without improving the most important deliverable: a safe, understandable and reproducible `Pause`/`Resume` monitor.
 
 ---
 
@@ -91,36 +91,36 @@ This is an explicit and safe failure mode rather than an unsupported claim of un
 
 Let \(\mathcal R_t\) be the set of robots known at tick \(t\). Robot \(i\)'s reported pose is
 
-\[
+$$
 q_{i,t} =
 \left(
 p^x_{i,t},
 p^y_{i,t},
 \theta_{i,t}
 \right),
-\]
+$$
 
 and \(\widehat q_{i,t}\) is the next pose derived from its remaining path.
 
 Define the binary action variable
 
-\[
+$$
 z_{i,t} =
 \begin{cases}
 1, & \text{Resume},\\
 0, & \text{Pause}.
 \end{cases}
-\]
+$$
 
 Under the assignment's one-node-per-step semantics,
 
-\[
+$$
 q_{i,t+1} =
 \begin{cases}
 \widehat q_{i,t}, & z_{i,t}=1,\\
 q_{i,t}, & z_{i,t}=0.
 \end{cases}
-\]
+$$
 
 This is not a route-planning model. The path and next node are inputs; \(z_{i,t}\) only controls whether the next movement is authorised during the present tick.
 
@@ -128,19 +128,19 @@ This is not a route-planning model. The path and next node are inputs; \(z_{i,t}
 
 The robot is represented as a rectangle of length
 
-\[
+$$
 L=1.430\ \mathrm m
-\]
+$$
 
 and width
 
-\[
+$$
 W=0.630\ \mathrm m,
-\]
+$$
 
 centred at its reported pose. Before rotation, the length is aligned with the positive \(x\)-axis. For pose \(q=(p^x,p^y,\theta)\), the unbuffered footprint is
 
-\[
+$$
 F(q)=
 \begin{bmatrix}
 \cos\theta & -\sin\theta\\
@@ -154,15 +154,15 @@ F(q)=
 p^x\\
 p^y
 \end{bmatrix}.
-\]
+$$
 
 A configurable margin \(\delta\geq0\) expands this footprint. Because Shapely represents a round buffer using polygonal chords, the implementation compensates the requested distance. With \(N\) segments per quadrant, it applies
 
-\[
+$$
 \delta' =
 \frac{\delta}{\cos\!\left(\frac{\pi}{4N}\right)}
 (1+\varepsilon),
-\]
+$$
 
 for a very small numerical guard \(\varepsilon>0\). This makes the polygonal buffer circumscribe, rather than under-approximate, the requested round margin.
 
@@ -170,13 +170,13 @@ for a very small numerical guard \(\varepsilon>0\). This makes the polygonal buf
 
 For `Pause`, the occupied region is the compensated buffered footprint at the current pose:
 
-\[
+$$
 E^0_{i,t}=F_{\delta'}(q_{i,t}).
-\]
+$$
 
 For a `Resume` step with unchanged heading, the occupied region is
 
-\[
+$$
 E^1_{i,t}
 =
 \operatorname{conv}
@@ -185,16 +185,16 @@ F_{\delta'}(q_{i,t})
 \cup
 F_{\delta'}(\widehat q_{i,t})
 \right).
-\]
+$$
 
 This convex hull covers straight translation between the endpoint footprints.
 
 For a heading change, the endpoint rectangles alone are not sufficient. The implementation uses the rectangle's circumscribed radius,
 
-\[
+$$
 \rho =
 \frac{1}{2}\sqrt{L^2+W^2}+\delta',
-\]
+$$
 
 constructs a square of half-size \(\rho\) at each endpoint centre, and takes the convex hull of those squares. This contains every rectangle orientation whose centre lies on the straight segment between the two poses.
 
@@ -206,10 +206,10 @@ This geometry is not presented as a certified physical continuous-time safety ca
 
 For every unordered pair \(\{i,j\}\), the monitor evaluates all four action combinations:
 
-\[
+$$
 (z_i,z_j)\in
 \{(0,0),(0,1),(1,0),(1,1)\}.
-\]
+$$
 
 A combination is unsafe if the corresponding occupied regions intersect. Each unsafe combination becomes a hard binary no-good:
 
@@ -222,9 +222,9 @@ A combination is unsafe if the corresponding occupied regions intersect. Each un
 
 The familiar mutual-exclusion constraint \(z_i+z_j\leq1\) is therefore only one possible relation. The model also captures implications. For example,
 
-\[
+$$
 z_i\leq z_j
-\]
+$$
 
 means that robot \(i\) may move only if robot \(j\) also moves out of its blocking position.
 
@@ -236,14 +236,14 @@ For a connected conflict component \(C\), let \(\mathcal N_C\) be its set of for
 
 The feasible region is
 
-\[
+$$
 \mathcal F_C =
 \left\{
 z\in\{0,1\}^{|C|}:
 z\text{ satisfies every no-good in }\mathcal N_C
 \text{ and every assignment in }\mathcal H_C
 \right\}.
-\]
+$$
 
 Deadlines, battery level, load state and waiting time do not relax these constraints. They are used only to choose among solutions already inside \(\mathcal F_C\).
 
@@ -287,10 +287,10 @@ A priority score cannot make an unsafe action feasible.
 
 For component \(C\), the first objective is
 
-\[
+$$
 \max_{z\in\mathcal F_C}
 \sum_{i\in C} z_i.
-\]
+$$
 
 This maximises the number of robots authorised to execute their next movement during the current tick.
 
@@ -300,7 +300,7 @@ It prevents an all-Pause solution being preferred when a feasible positive-progr
 
 Several feasible assignments may Resume the same number of robots. A bounded integer score then represents business urgency and temporal fairness:
 
-\[
+$$
 S_i =
 V_0
 +V_i^{\mathrm{load}}
@@ -309,7 +309,7 @@ V_0
 +V_i^{\mathrm{wait}}
 +V_i^{\mathrm{grant}}
 +V_i^{\mathrm{clear}}.
-\]
+$$
 
 The terms have the following meanings:
 
@@ -335,16 +335,16 @@ The intended ordering is:
 
 The implementation assigns a sufficiently large base reward \(M_C\) to every Resume decision:
 
-\[
+$$
 \max_{z\in\mathcal F_C}
 \sum_{i\in C}(M_C+S_i)z_i.
-\]
+$$
 
 Let \(S_{\max}(C)\) be a valid upper bound on the total secondary score in component \(C\). Choosing
 
-\[
+$$
 M_C>S_{\max}(C)
-\]
+$$
 
 guarantees that one additional Resume dominates every possible secondary-score advantage of a solution with one fewer resumed robot.
 
@@ -364,7 +364,7 @@ Conversely, a lower-priority robot may be selected when moving it is the only fe
 
 For a component below the configured size threshold, the monitor solves
 
-\[
+$$
 \begin{aligned}
 \max \quad
 & \sum_{i\in C}(M_C+S_i)z_i,\\
@@ -373,7 +373,7 @@ For a component below the configured size threshold, the monitor solves
 & z_i\in\{0,1\}
 \qquad \forall i\in C.
 \end{aligned}
-\]
+$$
 
 The OR-Tools CP-SAT solver uses:
 
@@ -442,15 +442,15 @@ Let:
 
 The present implementation examines every unordered pair:
 
-\[
+$$
 \binom n2=\frac{n(n-1)}2.
-\]
+$$
 
 It evaluates four action combinations for each pair. Treating the low-complexity polygon operations as bounded geometric work gives
 
-\[
+$$
 T_{\mathrm{pair}}(n)=O(n^2).
-\]
+$$
 
 ### 7.2 Graph construction
 
@@ -475,15 +475,15 @@ The most relevant scale measure is therefore the largest connected component, no
 
 The implementation repeatedly scans the component's clauses during propagation. A conservative bound for the greedy pass is
 
-\[
+$$
 O\!\left(k^2(p+1)\right).
-\]
+$$
 
 The bounded repair pass examines at most \(r\) candidates, giving
 
-\[
+$$
 O\!\left(rk^2(p+1)\right).
-\]
+$$
 
 If the configured cap allows every robot to be examined, \(r\leq k\). Working memory is \(O(k+p)\).
 
@@ -493,9 +493,9 @@ These are conservative implementation-level bounds, not claims about an idealise
 
 The final fleet-wide validator performs another all-pairs check:
 
-\[
+$$
 O(n^2).
-\]
+$$
 
 The duplication is reasonable for a small take-home fleet because it protects the primary safety invariant. It is not the intended architecture for a 1,000-robot decision domain.
 
@@ -523,33 +523,33 @@ Consider two robots \(A\) and \(B\) using the same narrow resource in opposite d
 
 At tick \(t\), a feasible order is
 
-\[
+$$
 (z_A,z_B)=(1,0).
-\]
+$$
 
 Robot \(A\) starts clearing the resource while \(B\) waits.
 
 Suppose a stateless policy reverses the order at tick \(t+1\) because \(B\)'s raw priority has become slightly higher:
 
-\[
+$$
 (1,0)\rightarrow(0,1).
-\]
+$$
 
 Robot \(A\) is now paused while still occupying capacity needed by \(B\). In the new geometry, the model may contain
 
-\[
+$$
 z_A\leq z_B,
 \qquad
 z_B\leq z_A,
 \qquad
 z_A+z_B\leq1.
-\]
+$$
 
 Together, these leave only
 
-\[
+$$
 (z_A,z_B)=(0,0).
-\]
+$$
 
 A feasible sequence existed, but pre-empting the selected robot before it cleared the constrained area created a zero-progress blocking state.
 
@@ -619,37 +619,37 @@ Assume a low-priority robot \(B\) is already occupying a junction and a high-pri
 
 Suppose the geometry gives
 
-\[
+$$
 z_H\leq z_B,
-\]
+$$
 
 so \(H\) may move only if \(B\) also moves out of the blocking position, and
 
-\[
+$$
 z_B+z_H\leq1,
-\]
+$$
 
 so they may not both move during the same tick.
 
 These constraints imply
 
-\[
+$$
 z_H=0.
-\]
+$$
 
 The feasible alternatives are
 
-\[
+$$
 (z_B,z_H)=(0,0)
 \quad\text{or}\quad
 (1,0).
-\]
+$$
 
 The throughput-first objective selects
 
-\[
+$$
 (z_B,z_H)=(1,0).
-\]
+$$
 
 The lower-priority robot moves because completing its current movement is the only feasible way to release the constrained capacity. The higher-priority robot waits because its movement is infeasible at that tick.
 
@@ -695,7 +695,7 @@ LNS is most useful for improving a large incumbent schedule. The implemented sub
 
 #### Benders decomposition
 
-Benders decomposition would become meaningful after the factory is modelled as stable capacity-constrained zones, with a master problem for allocation or order and geometric subproblems for detailed feasibility. The present one-step pairwise model does not yet have a useful master/subproblem structure. Implementing valid cuts within the time budget would have displaced higher-value safety and testing work.
+Benders decomposition would become meaningful after the factory is modelled as stable capacity-constrained zones, with a master problem for allocation or order and geometric subproblems for detailed feasibility. The present one-step pairwise model does not yet have a useful master/subproblem structure. Implementing valid cuts within three days would have displaced higher-value safety and testing work.
 
 ---
 
@@ -824,9 +824,9 @@ The important scale is the number of robots within one coupled decision domain, 
 
 Ten robots create
 
-\[
+$$
 \binom{10}{2}=45
-\]
+$$
 
 unordered pairs and at most 180 pairwise action-combination checks before final validation.
 
@@ -846,9 +846,9 @@ Operational checks should include p50, p95 and p99 tick duration, stale-state al
 
 One hundred robots create
 
-\[
+$$
 \binom{100}{2}=4{,}950
-\]
+$$
 
 pairs and up to 19,800 action-combination checks before the final validator.
 
@@ -868,9 +868,9 @@ Independent components could be solved concurrently only if results are collecte
 
 One thousand robots create
 
-\[
+$$
 \binom{1000}{2}=499{,}500
-\]
+$$
 
 pairs and almost two million action-combination checks before the independent validation repeats all-pairs work.
 
@@ -911,9 +911,9 @@ on timeout or disagreement:
 
 Action delivery remains at least once. Each logical decision carries the restart-safe identity
 
-\[
+$$
 (\text{run\_id},\text{device\_id},\text{tick\_id}),
-\]
+$$
 
 so consumers can handle duplicates idempotently.
 
@@ -955,9 +955,9 @@ The per-tick trace records the information needed to reproduce and explain a dec
 
 The service creates one logical decision for each known robot per tick. RabbitMQ publication is at least once because an ambiguous confirm failure may cause a retry and duplicate delivery. One `run_id` is generated for each process execution, and the action identity is
 
-\[
+$$
 (\text{run\_id},\text{device\_id},\text{tick\_id}).
-\]
+$$
 
 Retries within the same run retain the same identity; equal process-local tick numbers from separate runs do not collide.
 
@@ -1022,7 +1022,7 @@ Coverage is evidence that code was exercised, not a direct correctness percentag
 
 The implemented monitor is deliberately narrower than a complete fleet-management system. It solves the decision that the available interface actually permits: which robots may execute one fixed-route movement safely during the current tick.
 
-The approach can be stated:
+The approach can be stated in classical OR terms:
 
 1. binary action variables describe Pause and Resume;
 2. pairwise geometry defines the feasible region;
@@ -1033,4 +1033,4 @@ The approach can be stated:
 7. continuation grants preserve a safe non-pre-emptive order;
 8. independent validation protects the published fleet decision.
 
-The principal trade-off is intentional. The model does not optimise a long planning horizon, but its hard constraints are explicit, its decisions are reproducible, its failure modes are honest and its scale limitations are clear. Within the time budget, that is a more defensible engineering result than a broader but weakly validated optimisation architecture.
+The principal trade-off is intentional. The model does not optimise a long planning horizon, but its hard constraints are explicit, its decisions are reproducible, its failure modes are honest and its scale limitations are clear. Within the three-day implementation budget, that is a more defensible engineering result than a broader but weakly validated optimisation architecture.
