@@ -87,6 +87,33 @@ def test_resume_envelope_covers_translated_sweep() -> None:
     assert envelope.area == pytest.approx((2.0 + 1.430) * 0.630)
 
 
+def test_resume_envelope_contains_intermediate_footprint_during_heading_change() -> None:
+    snapshot = snapshot_for(
+        path=[{"x": 0.0, "y": 0.0, "theta": math.pi / 2.0}],
+    )
+    config = MonitorConfig(safety_margin_metres=0.02)
+
+    envelope = resume_envelope(snapshot, config)
+    intermediate = oriented_footprint(
+        Pose(0.0, 0.0, math.pi / 4.0),
+        DIMENSIONS,
+        config.safety_margin_metres,
+    )
+
+    assert envelope.covers(intermediate)
+
+
+def test_polygonal_buffer_conservatively_contains_requested_round_margin() -> None:
+    pose = Pose(1.25, -0.75, math.pi / 7.0)
+    margin = 0.05
+    physical = oriented_footprint(pose, DIMENSIONS, 0.0)
+    high_resolution_requested_offset = physical.buffer(margin, quad_segs=512)
+
+    buffered = oriented_footprint(pose, DIMENSIONS, margin)
+
+    assert buffered.covers(high_resolution_requested_offset)
+
+
 def test_no_path_resume_envelope_equals_pause_envelope() -> None:
     snapshot = snapshot_for(path=[])
     config = MonitorConfig(safety_margin_metres=0.05)
@@ -149,6 +176,4 @@ def test_action_envelope_dispatches_to_selected_action(
     snapshot = snapshot_for(path=[{"x": 1.0, "y": 0.0, "theta": 0.0}])
     config = MonitorConfig(safety_margin_metres=0.01)
 
-    assert action_envelope(snapshot, action, config).equals(
-        expected_function(snapshot, config)
-    )
+    assert action_envelope(snapshot, action, config).equals(expected_function(snapshot, config))

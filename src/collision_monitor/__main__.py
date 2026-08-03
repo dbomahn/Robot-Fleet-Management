@@ -6,11 +6,18 @@ import argparse
 import asyncio
 import logging
 import signal
+import socket
 import sys
 from collections.abc import Sequence
+from urllib.parse import urlparse
 
 from collision_monitor.config import MonitorConfig
-from collision_monitor.logging_utils import JsonFormatter, log_json_event
+from collision_monitor.logging_utils import (
+    ConsoleFormatter,
+    JsonFormatter,
+    log_json_event,
+    redact_credentials,
+)
 from collision_monitor.service import CollisionMonitorService
 from collision_monitor.transport.rabbitmq import RabbitMQTransport
 
@@ -35,17 +42,38 @@ def build_parser() -> argparse.ArgumentParser:
         "validate-config",
         help="Validate environment configuration without connecting to RabbitMQ.",
     )
+    subparsers.add_parser(
+        "healthcheck",
+        help="Check that the configured RabbitMQ endpoint is reachable.",
+    )
     return parser
 
 
 def _configure_logging(config: MonitorConfig) -> logging.Logger:
-    """Configure standard-library logging as one JSON object per line."""
+    """Configure production JSON or concise local console logging."""
     handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
+    formatter: logging.Formatter = (
+        ConsoleFormatter() if config.log_format.lower() == "console" else JsonFormatter()
+    )
+    handler.setFormatter(formatter)
     root_logger = logging.getLogger()
     root_logger.handlers = [handler]
     root_logger.setLevel(config.log_level.upper())
     return logging.getLogger("collision_monitor")
+
+
+def _check_rabbitmq_health(config: MonitorConfig) -> None:
+    """Open a bounded TCP connection without exposing configured credentials."""
+    parsed_url = urlparse(config.rabbitmq_url)
+    if parsed_url.hostname is None:
+        raise ValueError("RabbitMQ URL does not contain a hostname")
+    default_port = 5671 if parsed_url.scheme == "amqps" else 5672
+    endpoint = (parsed_url.hostname, parsed_url.port or default_port)
+    with socket.create_connection(
+        endpoint,
+        timeout=config.healthcheck_timeout_seconds,
+    ):
+        return
 
 
 async def _run_service(config: MonitorConfig) -> None:
@@ -113,11 +141,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "validate-config":
         print("Configuration is valid.")
         return 0
+    if arguments.command == "healthcheck":
+        try:
+            _check_rabbitmq_health(config)
+        except OSError as exc:
+            safe_error = redact_credentials(str(exc))
+            print(f"Health check failed: {safe_error}", file=sys.stderr)
+            return 1
+        print("Collision Monitor dependencies are reachable.")
+        return 0
     if arguments.command == "run":
         try:
             asyncio.run(_run_service(config))
         except KeyboardInterrupt:
             return 130
+        except Exception as exc:
+            log_json_event(
+                logging.getLogger("collision_monitor"),
+                logging.CRITICAL,
+                "service_failed",
+                {"error": str(exc)},
+            )
+            return 1
         return 0
     raise RuntimeError(f"unsupported command {arguments.command!r}")
 

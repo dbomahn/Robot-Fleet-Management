@@ -1,0 +1,23 @@
+name: no_conflict
+description: Two robots travel on widely separated parallel lanes.
+nominal_speed_mps: 1.0
+tick_interval_seconds: 1.0
+max_ticks: 10
+resolvable: true
+robots:
+  - device_id: robot-a
+    initial_pose: {x: -3.0, y: -3.0, theta: 0.0}
+    path:
+      - {x: -2.0, y: -3.0, theta: 0.0}
+      - {x: -1.0, y: -3.0, theta: 0.0}
+    loaded: false
+    battery_level: 80.0
+    deadline_offset_ms: 120000
+  - device_id: robot-b
+    initial_pose: {x: -3.0, y: 3.0, theta: 0.0}
+    path:
+      - {x: -2.0, y: 3.0, theta: 0.0}
+      - {x: -1.0, y: 3.0, theta: 0.0}
+    loaded: true
+    battery_level: 70.0
+    deadline_offset_ms: 90000

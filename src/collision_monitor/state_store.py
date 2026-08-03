@@ -83,7 +83,14 @@ class LatestStateStore:
         *,
         received_monotonic_seconds: float,
     ) -> StateUpdateResult:
-        """Store a state unless a newer source timestamp is already present."""
+        """Apply the documented per-robot source-timestamp ordering policy.
+
+        A state older than the stored source timestamp is rejected and cannot
+        refresh receive time. Equal timestamps are accepted in receive order,
+        so a corrected retransmission deterministically replaces the previous
+        value and refreshes receive time. A newer timestamp always replaces the
+        stored value. This policy is independent for each robot.
+        """
         candidate = StoredRobotState(
             state=state,
             received_monotonic_seconds=received_monotonic_seconds,
@@ -115,10 +122,7 @@ class LatestStateStore:
         pose_tolerance: float,
     ) -> FleetStateSnapshot:
         """Build immutable engine snapshots from one coherent store view."""
-        if (
-            not math.isfinite(captured_monotonic_seconds)
-            or captured_monotonic_seconds < 0
-        ):
+        if not math.isfinite(captured_monotonic_seconds) or captured_monotonic_seconds < 0:
             raise ValueError("captured monotonic time must be finite and non-negative")
         if captured_epoch_ms < 0:
             raise ValueError("captured epoch time must not be negative")

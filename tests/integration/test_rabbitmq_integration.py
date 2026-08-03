@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shutil
 import uuid
 
 import aio_pika
@@ -19,8 +18,8 @@ from collision_monitor.transport.rabbitmq import RabbitMQTransport
 pytestmark = [
     pytest.mark.rabbitmq,
     pytest.mark.skipif(
-        os.environ.get("RUN_RABBITMQ_INTEGRATION") != "1" or shutil.which("docker") is None,
-        reason="set RUN_RABBITMQ_INTEGRATION=1 with Docker available to run",
+        os.environ.get("RUN_RABBITMQ_INTEGRATION") != "1",
+        reason="set RUN_RABBITMQ_INTEGRATION=1 with a reachable RabbitMQ broker",
     ),
 ]
 
@@ -38,6 +37,7 @@ def test_persistent_action_round_trip_against_live_rabbitmq() -> None:
         )
         transport = RabbitMQTransport(config)
         message = ActionMessage(
+            run_id=f"integration-run-{suffix}",
             device_id="robot-a",
             action=Action.RESUME,
             tick_id="integration-tick",
@@ -57,9 +57,7 @@ def test_persistent_action_round_trip_against_live_rabbitmq() -> None:
             incoming = await queue.get(timeout=5.0, fail=False)
 
             assert incoming is not None
-            assert json.loads(incoming.body.decode("utf-8")) == message.model_dump(
-                mode="json"
-            )
+            assert json.loads(incoming.body.decode("utf-8")) == message.model_dump(mode="json")
             await incoming.ack()
         finally:
             await transport.close()
@@ -67,4 +65,3 @@ def test_persistent_action_round_trip_against_live_rabbitmq() -> None:
             await connection.close()
 
     asyncio.run(scenario())
-

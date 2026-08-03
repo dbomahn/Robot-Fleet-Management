@@ -49,9 +49,7 @@ class PriorityBounds:
         if self.maximum_component_secondary < 0:
             raise ValueError("maximum_component_secondary must not be negative")
         if self.throughput_reward <= self.maximum_component_secondary:
-            raise ValueError(
-                "throughput_reward must exceed the component secondary-score bound"
-            )
+            raise ValueError("throughput_reward must exceed the component secondary-score bound")
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,18 +136,13 @@ def priority_bounds(component_size: int, config: MonitorConfig) -> PriorityBound
     if component_size < 1:
         raise ValueError("component_size must be at least one")
 
-    maximum_clearance = (
-        (component_size - 1) * config.priority_clearance_bonus_per_conflict
-    )
+    maximum_clearance = (component_size - 1) * config.priority_clearance_bonus_per_conflict
     maximum_per_robot = (
         config.priority_base_progress_value
         + config.priority_loaded_bonus
         + config.priority_deadline_urgency_maximum
         + config.priority_low_battery_urgency_bonus
-        + (
-            config.priority_waiting_age_cap_ticks
-            * config.priority_waiting_age_bonus_per_tick
-        )
+        + (config.priority_waiting_age_cap_ticks * config.priority_waiting_age_bonus_per_tick)
         + config.priority_active_grant_continuation_bonus
         + maximum_clearance
     )
@@ -233,20 +226,14 @@ def score_robot_priority(
         else 0
     )
     capped_waiting_age = min(waiting_age_ticks, config.priority_waiting_age_cap_ticks)
-    waiting_age_bonus = (
-        capped_waiting_age * config.priority_waiting_age_bonus_per_tick
-    )
-    grant_bonus = (
-        config.priority_active_grant_continuation_bonus if active_grant else 0
-    )
+    waiting_age_bonus = capped_waiting_age * config.priority_waiting_age_bonus_per_tick
+    grant_bonus = config.priority_active_grant_continuation_bonus if active_grant else 0
     clearance_count = clearance_opportunity_count(
         snapshot.state.device_id,
         pairwise_constraints,
     )
     if clearance_count > component_size - 1:
-        raise ValueError(
-            "clearance conflict count exceeds the supplied component-size bound"
-        )
+        raise ValueError("clearance conflict count exceeds the supplied component-size bound")
     clearance_bonus = clearance_count * config.priority_clearance_bonus_per_conflict
 
     secondary_score = (
@@ -300,9 +287,7 @@ def score_component_priorities(
         raise ValueError(f"component contains unknown robots: {sorted(missing_snapshots)!r}")
     missing_wait_ages = component_ids.difference(waiting_ages)
     if missing_wait_ages:
-        raise ValueError(
-            f"waiting ages are missing for robots: {sorted(missing_wait_ages)!r}"
-        )
+        raise ValueError(f"waiting ages are missing for robots: {sorted(missing_wait_ages)!r}")
 
     component_constraints = tuple(
         pair

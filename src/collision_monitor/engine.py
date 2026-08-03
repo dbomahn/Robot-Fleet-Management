@@ -42,8 +42,10 @@ def _plain_bounds(geometry_bounds: Sequence[float]) -> tuple[float, float, float
 
 
 class EngineAlarmCode:
-    """Stable engine-level critical diagnostic codes."""
+    """Stable engine-level safety and liveness alarm codes."""
 
+    PROLONGED_STATE_LOSS_STATIC_OBSTACLE = "PROLONGED_STATE_LOSS_STATIC_OBSTACLE"
+    CURRENT_FOOTPRINT_OVERLAP = "CURRENT_FOOTPRINT_OVERLAP"
     GLOBAL_SAFETY_VALIDATION_FAILED = "GLOBAL_SAFETY_VALIDATION_FAILED"
     FAIL_SAFE_GEOMETRY_REMAINS_UNSAFE = "FAIL_SAFE_GEOMETRY_REMAINS_UNSAFE"
 
@@ -89,9 +91,7 @@ def _normalise_snapshots(
             raise TypeError("snapshot stale flags must be Boolean")
     for previous, current in zip(ordered, ordered[1:], strict=False):
         if previous.state.device_id == current.state.device_id:
-            raise ValueError(
-                f"duplicate device IDs in snapshots: {current.state.device_id}"
-            )
+            raise ValueError(f"duplicate device IDs in snapshots: {current.state.device_id}")
     return ordered
 
 
@@ -106,10 +106,7 @@ def _derive_staleness(
     return tuple(
         replace(
             snapshot,
-            stale=(
-                snapshot.stale
-                or now_ms - snapshot.received_at_ms >= stale_limit_ms
-            ),
+            stale=(snapshot.stale or now_ms - snapshot.received_at_ms >= stale_limit_ms),
         )
         for snapshot in snapshots
     )
@@ -282,10 +279,7 @@ class CollisionDecisionEngine:
             if exact_result is not None and exact_result.feasible:
                 decisions.update(exact_result.decisions)
                 sources.update(
-                    {
-                        robot_id: DecisionSource.CP_SAT
-                        for robot_id in exact_result.decisions
-                    }
+                    {robot_id: DecisionSource.CP_SAT for robot_id in exact_result.decisions}
                 )
                 component_diagnostics.append(
                     {
@@ -294,6 +288,7 @@ class CollisionDecisionEngine:
                         "solver_status": exact_result.solver_status.value,
                         "objective_value": exact_result.objective_value,
                         "best_bound": exact_result.best_bound,
+                        "wall_time_seconds": exact_result.wall_time_seconds,
                         "optimality_proven": exact_result.optimality_proven,
                     }
                 )
@@ -320,13 +315,17 @@ class CollisionDecisionEngine:
                 )
             else:
                 decisions.update({robot_id: Action.PAUSE for robot_id in component})
-                sources.update(
-                    {robot_id: DecisionSource.FAIL_SAFE for robot_id in component}
-                )
+                sources.update({robot_id: DecisionSource.FAIL_SAFE for robot_id in component})
             component_diagnostics.append(
                 {
                     "component": tuple(component),
                     "method": heuristic_result.decision_source.value,
+                    "solver_status": (
+                        exact_result.solver_status.value if exact_result is not None else None
+                    ),
+                    "wall_time_seconds": (
+                        exact_result.wall_time_seconds if exact_result is not None else None
+                    ),
                     "fallback_reason": fallback_reason,
                     "heuristic_reason": heuristic_result.fallback_reason,
                     "feasible": heuristic_result.feasible,
@@ -480,6 +479,11 @@ class CollisionDecisionEngine:
             config=self._config,
         )
         conflict_model = self._conflict_model_builder(ordered, self._config)
+        current_footprint_violations = validate_global_safety(
+            ordered,
+            {snapshot.state.device_id: Action.PAUSE for snapshot in ordered},
+            self._config,
+        )
 
         # Grant changes remain provisional until the global validator accepts the fleet.
         provisional_grants = self._grant_manager.clone()
@@ -510,6 +514,17 @@ class CollisionDecisionEngine:
         final_violations = initial_violations
         affected_robots: tuple[str, ...] = ()
         critical_diagnostics: list[Mapping[str, Any]] = []
+        if current_footprint_violations:
+            critical_diagnostics.append(
+                {
+                    "severity": "critical",
+                    "code": EngineAlarmCode.CURRENT_FOOTPRINT_OVERLAP,
+                    "context": (
+                        "Current stationary robot footprints intersect; safety is "
+                        "already violated before any movement decision."
+                    ),
+                }
+            )
 
         if initial_violations:
             affected_robots = self._affected_robots(initial_violations, conflict_model)
@@ -580,8 +595,19 @@ class CollisionDecisionEngine:
                 )
             )
 
-        alarm_codes = tuple(alarm.value for alarm in preview.alarms) + tuple(
-            str(diagnostic["code"]) for diagnostic in critical_diagnostics
+        stale_robot_ids = tuple(snapshot.state.device_id for snapshot in ordered if snapshot.stale)
+        alarm_codes = tuple(
+            dict.fromkeys(
+                (
+                    *(alarm.value for alarm in preview.alarms),
+                    *(
+                        (EngineAlarmCode.PROLONGED_STATE_LOSS_STATIC_OBSTACLE,)
+                        if stale_robot_ids
+                        else ()
+                    ),
+                    *(str(diagnostic["code"]) for diagnostic in critical_diagnostics),
+                )
+            )
         )
         tick_metadata: dict[str, Any] = {
             "now_ms": now_ms,
@@ -624,6 +650,10 @@ class CollisionDecisionEngine:
             "grant_alarms": tuple(alarm.value for alarm in preview.alarms),
             "alarms": alarm_codes,
             "critical_diagnostics": tuple(critical_diagnostics),
+            "prolonged_stale_robot_ids": stale_robot_ids,
+            "current_footprint_overlaps": tuple(
+                violation.as_log_data() for violation in current_footprint_violations
+            ),
             "initial_global_safety_violations": tuple(
                 violation.as_log_data() for violation in initial_violations
             ),
@@ -632,9 +662,7 @@ class CollisionDecisionEngine:
             ),
             "global_safety_valid": not final_violations,
             "state_committed": state_committed,
-            "acquired_grants": (
-                grant_result.acquired_grants if grant_result is not None else ()
-            ),
+            "acquired_grants": (grant_result.acquired_grants if grant_result is not None else ()),
             "released_grants": (
                 tuple(
                     (release.robot_id, release.reason.value)

@@ -1,22 +1,112 @@
+x-app-environment: &app-environment
+  COLLISION_MONITOR_RABBITMQ_URL: >-
+    amqp://${RABBITMQ_USER:-collision_monitor}:${RABBITMQ_PASSWORD:-local-development-only}@rabbitmq:5672/
+  COLLISION_MONITOR_LOG_FORMAT: json
+
+x-app-security: &app-security
+  read_only: true
+  init: true
+  stop_signal: SIGTERM
+  stop_grace_period: 15s
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+
+x-bounded-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   rabbitmq:
-    image: rabbitmq:3.13-management
+    image: rabbitmq:3.13.7-management@sha256:e582c0bc7766f3342496d8485efb5a1df782b5ce3886ad017e2eaae442311f69
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-collision_monitor}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-local-development-only}
     ports:
       - "5672:5672"
       - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       timeout: 5s
       retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    logging: *bounded-logging
 
-  collision-monitor:
-    build: .
+  monitor:
+    image: collision-monitor:local
+    build:
+      context: .
+      target: runtime
     depends_on:
       rabbitmq:
         condition: service_healthy
     env_file:
       - path: .env
         required: false
+    environment: *app-environment
+    healthcheck:
+      test: ["CMD", "python", "-m", "collision_monitor", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    logging: *bounded-logging
+    <<: *app-security
+
+  simulator:
+    image: collision-monitor:local
+    build:
+      context: .
+      target: runtime
+    profiles: ["demo"]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      monitor:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment: *app-environment
+    entrypoint: ["python", "-m", "collision_monitor.simulator.cli"]
+    command:
+      - --scenario
+      - /app/scenarios/three_way.yaml
+      - --transport
+      - rabbitmq
+    volumes:
+      - ./scenarios:/app/scenarios:ro
+    restart: "no"
+    logging: *bounded-logging
+    <<: *app-security
+
+  test:
+    image: collision-monitor-test:local
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
     environment:
-      COLLISION_MONITOR_RABBITMQ_URL: amqp://guest:guest@rabbitmq/
+      <<: *app-environment
+      PYTEST_ADDOPTS: -p no:cacheprovider
+      RUN_RABBITMQ_INTEGRATION: "1"
+    restart: "no"
+    logging: *bounded-logging
+    <<: *app-security
+
+volumes:
+  rabbitmq-data:

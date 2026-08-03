@@ -36,6 +36,22 @@ class RobotDimensions:
 
 
 DimensionsLike: TypeAlias = RobotDimensions | tuple[float, float]
+_BUFFER_QUADRANT_SEGMENTS = 8
+_BUFFER_ROUNDING_GUARD = 1e-12
+
+
+def _conservative_buffer_distance(safety_margin: float) -> float:
+    """Inflate a round-buffer radius so its chords contain the requested offset.
+
+    GEOS represents each quarter-circle with a finite number of chords. A
+    polygon using the requested radius directly lies slightly inside the exact
+    circular offset between vertices. Dividing by the chord apothem factor
+    makes the generated polygon circumscribe, rather than inscribe, the exact
+    requested safety margin.
+    """
+    half_segment_angle = math.pi / (4 * _BUFFER_QUADRANT_SEGMENTS)
+    compensated = safety_margin / math.cos(half_segment_angle)
+    return compensated * (1.0 + _BUFFER_ROUNDING_GUARD)
 
 
 def _normalise_dimensions(
@@ -113,8 +129,10 @@ def _oriented_footprint(
     footprint = affinity.rotate(footprint, pose.theta, origin=(0.0, 0.0), use_radians=True)
     footprint = affinity.translate(footprint, xoff=pose.x, yoff=pose.y)
     if safety_margin > 0:
-        # A round buffer represents the same Euclidean clearance in every direction.
-        footprint = footprint.buffer(safety_margin)
+        footprint = footprint.buffer(
+            _conservative_buffer_distance(safety_margin),
+            quad_segs=_BUFFER_QUADRANT_SEGMENTS,
+        )
     return _validated_polygon(footprint, robot_id=robot_id)
 
 
@@ -158,8 +176,13 @@ def pause_envelope(snapshot: RobotSnapshot, config: MonitorConfig) -> Polygon:
 def resume_envelope(snapshot: RobotSnapshot, config: MonitorConfig) -> Polygon:
     """Return a conservative convex sweep between current and next poses.
 
-    Taking the convex hull of both buffered footprints conservatively covers
-    straight-line translation as well as any heading change during the step.
+    For unchanged heading, the convex hull of both buffered footprints exactly
+    covers straight-line translation. When heading changes, endpoint
+    footprints alone do not necessarily contain every intermediate rectangle.
+    In that case, the envelope uses the convex hull of axis-aligned squares
+    whose half-size is the robot's circumscribed radius plus safety margin.
+    This deliberately conservative sweep contains every intermediate heading
+    while the rectangle centre translates along the step.
     """
     robot_id = snapshot.state.device_id
     dimensions = _configured_dimensions(config)
@@ -175,7 +198,34 @@ def resume_envelope(snapshot: RobotSnapshot, config: MonitorConfig) -> Polygon:
         config.safety_margin_metres,
         robot_id=robot_id,
     )
-    return _validated_polygon(current.union(following).convex_hull, robot_id=robot_id)
+    endpoint_hull = current.union(following).convex_hull
+    heading_delta = math.atan2(
+        math.sin(snapshot.next_pose.theta - snapshot.state.theta),
+        math.cos(snapshot.next_pose.theta - snapshot.state.theta),
+    )
+    if heading_delta == 0.0:
+        return _validated_polygon(endpoint_hull, robot_id=robot_id)
+
+    circumscribed_radius = math.hypot(
+        dimensions.length_metres, dimensions.width_metres
+    ) / 2.0 + _conservative_buffer_distance(config.safety_margin_metres)
+    current_pose = snapshot.state.current_pose()
+    rotational_start = box(
+        current_pose.x - circumscribed_radius,
+        current_pose.y - circumscribed_radius,
+        current_pose.x + circumscribed_radius,
+        current_pose.y + circumscribed_radius,
+    )
+    rotational_end = box(
+        snapshot.next_pose.x - circumscribed_radius,
+        snapshot.next_pose.y - circumscribed_radius,
+        snapshot.next_pose.x + circumscribed_radius,
+        snapshot.next_pose.y + circumscribed_radius,
+    )
+    return _validated_polygon(
+        rotational_start.union(rotational_end).convex_hull,
+        robot_id=robot_id,
+    )
 
 
 def action_envelope(

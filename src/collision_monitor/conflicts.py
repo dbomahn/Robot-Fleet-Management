@@ -79,15 +79,13 @@ class NoGoodConstraint:
     def is_violated_by(self, assignment: Mapping[str, int]) -> bool:
         """Return whether every literal is false under a complete assignment."""
         return all(
-            assignment[literal.robot_id] == literal.forbidden_value
-            for literal in self.literals
+            assignment[literal.robot_id] == literal.forbidden_value for literal in self.literals
         )
 
     def expression(self) -> str:
         """Return the no-good clause in a concise diagnostic form."""
         return " OR ".join(
-            f"x[{literal.robot_id}] != {literal.forbidden_value}"
-            for literal in self.literals
+            f"x[{literal.robot_id}] != {literal.forbidden_value}" for literal in self.literals
         )
 
     def as_log_data(self) -> Mapping[str, Any]:
@@ -137,9 +135,7 @@ class PairwiseCompatibility:
     def forbidden_assignments(self) -> tuple[ActionAssignment, ...]:
         """Return unsafe action pairs in stable Pause-before-Resume order."""
         return tuple(
-            assignment
-            for assignment in ACTION_ASSIGNMENTS
-            if not self.compatibility[assignment]
+            assignment for assignment in ACTION_ASSIGNMENTS if not self.compatibility[assignment]
         )
 
     def no_good_constraints(self) -> tuple[NoGoodConstraint, ...]:
@@ -199,10 +195,7 @@ class ConflictModel:
             self,
             "adjacency",
             _immutable_mapping(
-                {
-                    robot_id: frozenset(neighbours)
-                    for robot_id, neighbours in self.adjacency.items()
-                }
+                {robot_id: frozenset(neighbours) for robot_id, neighbours in self.adjacency.items()}
             ),
         )
 
@@ -373,18 +366,14 @@ def build_conflict_model(
             envelopes,
         )
 
-    pairwise_constraints = tuple(
-        constraints_by_pair[pair] for pair in sorted(constraints_by_pair)
-    )
+    pairwise_constraints = tuple(constraints_by_pair[pair] for pair in sorted(constraints_by_pair))
     edges = tuple(
         constraint.robot_pair
         for constraint in pairwise_constraints
         if constraint.forbidden_assignments()
     )
     adjacency = build_adjacency(snapshots_by_id.keys(), edges)
-    isolated = tuple(
-        robot_id for robot_id in sorted(adjacency) if not adjacency[robot_id]
-    )
+    isolated = tuple(robot_id for robot_id in sorted(adjacency) if not adjacency[robot_id])
     components = decompose_connected_components(adjacency)
     no_goods = tuple(
         no_good

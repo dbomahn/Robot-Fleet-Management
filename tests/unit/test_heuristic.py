@@ -63,12 +63,10 @@ def make_pair(
         robot_i=robot_i,
         robot_j=robot_j,
         compatibility={
-            assignment: assignment not in forbidden_set
-            for assignment in ACTION_ASSIGNMENTS
+            assignment: assignment not in forbidden_set for assignment in ACTION_ASSIGNMENTS
         },
         envelope_bounds={
-            assignment: (DUMMY_BOUNDS, DUMMY_BOUNDS)
-            for assignment in ACTION_ASSIGNMENTS
+            assignment: (DUMMY_BOUNDS, DUMMY_BOUNDS) for assignment in ACTION_ASSIGNMENTS
         },
     )
 
@@ -127,8 +125,7 @@ def priorities_for(
     """Build stable priorities, defaulting to equal utility."""
     utility_by_id = utilities or {}
     return {
-        robot_id: priority(robot_id, utility_by_id.get(robot_id, 100))
-        for robot_id in robot_ids
+        robot_id: priority(robot_id, utility_by_id.get(robot_id, 100)) for robot_id in robot_ids
     }
 
 

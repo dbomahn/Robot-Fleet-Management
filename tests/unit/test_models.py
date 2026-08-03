@@ -73,9 +73,7 @@ def test_duplicate_device_ids_are_rejected_in_an_explicit_batch() -> None:
 
 
 def test_distinct_device_ids_are_accepted_in_an_explicit_batch() -> None:
-    states = parse_robot_state_batch(
-        [state_payload(), state_payload(device_id="robot-2")]
-    )
+    states = parse_robot_state_batch([state_payload(), state_payload(device_id="robot-2")])
 
     assert tuple(state.device_id for state in states) == ("robot-1", "robot-2")
 
@@ -134,4 +132,3 @@ def test_empty_path_uses_current_pose_and_marks_robot_at_goal() -> None:
     assert snapshot.next_pose == Pose(x=1.0, y=2.0, theta=0.5)
     assert snapshot.at_goal is True
     assert snapshot.received_at_ms == 1_720_000_000_100
-

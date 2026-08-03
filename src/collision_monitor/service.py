@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -93,6 +94,7 @@ class CollisionMonitorService:
         epoch_clock_ms: EpochClock = _epoch_clock_ms,
         sleeper: AsyncSleeper = asyncio.sleep,
         logger: logging.Logger | None = None,
+        run_id: str | None = None,
     ) -> None:
         self._config = config
         self._consumer = state_consumer
@@ -103,6 +105,9 @@ class CollisionMonitorService:
         self._epoch_clock_ms = epoch_clock_ms
         self._sleeper = sleeper
         self._logger = logger or logging.getLogger("collision_monitor.service")
+        if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
+            raise ValueError("run_id must be a non-empty string when supplied")
+        self._run_id = run_id if run_id is not None else str(uuid.uuid4())
         self._tick_sequence = 0
         self._rejected_state_count = 0
 
@@ -115,6 +120,11 @@ class CollisionMonitorService:
     def rejected_state_count(self) -> int:
         """Return the number of invalid or superseded input states."""
         return self._rejected_state_count
+
+    @property
+    def run_id(self) -> str:
+        """Return the immutable identity of this service process run."""
+        return self._run_id
 
     def _next_tick_id(self) -> str:
         """Return a deterministic process-local tick identifier."""
@@ -189,25 +199,27 @@ class CollisionMonitorService:
             pose_tolerance=self._config.pose_tolerance,
         )
 
-    @staticmethod
     def _action_message(
+        self,
         decision: RobotDecision,
         snapshot_by_robot: Mapping[str, RobotSnapshot],
         *,
         decision_timestamp: int,
         grant_active: bool,
+        tick_alarm_codes: tuple[str, ...],
     ) -> ActionMessage:
         """Build one validated output payload from a final engine decision."""
         snapshot = snapshot_by_robot[decision.robot_id]
         raw_context = decision.diagnostic_metadata.get("reason_context", ())
         reason_context = tuple(str(item) for item in raw_context)
         return ActionMessage(
+            run_id=self._run_id,
             device_id=decision.robot_id,
             action=decision.action,
             tick_id=decision.tick_id,
             decision_timestamp=decision_timestamp,
             source_state_timestamp=snapshot.state.timestamp,
-            reason_codes=decision.reason_codes,
+            reason_codes=tuple(dict.fromkeys((*decision.reason_codes, *tick_alarm_codes))),
             reason_context=reason_context,
             decision_source=decision.decision_source,
             grant_active=grant_active,
@@ -279,6 +291,7 @@ class CollisionMonitorService:
             for robot_id, record in sorted(self._engine.grant_manager.active_grants.items())
         )
         return {
+            "run_id": self._run_id,
             "tick_id": tick_id,
             "tick_epoch_ms": state_snapshot.captured_epoch_ms,
             "tick_monotonic_seconds": state_snapshot.captured_monotonic_seconds,
@@ -353,8 +366,9 @@ class CollisionMonitorService:
                 decision,
                 snapshot_by_robot,
                 decision_timestamp=state_snapshot.captured_epoch_ms,
-                grant_active=(
-                    decision.robot_id in self._engine.grant_manager.active_grants
+                grant_active=(decision.robot_id in self._engine.grant_manager.active_grants),
+                tick_alarm_codes=tuple(
+                    str(alarm) for alarm in fleet_decision.tick_metadata["alarms"]
                 ),
             )
             for decision in fleet_decision.decisions
@@ -374,6 +388,36 @@ class CollisionMonitorService:
             failure_tuple,
         )
         log_json_event(self._logger, logging.INFO, "decision_tick", trace)
+        stale_robot_ids = tuple(
+            str(robot_id) for robot_id in fleet_decision.tick_metadata["prolonged_stale_robot_ids"]
+        )
+        if stale_robot_ids:
+            log_json_event(
+                self._logger,
+                logging.WARNING,
+                "prolonged_state_loss_alarm",
+                {
+                    "tick_id": tick_id,
+                    "alarm_code": "PROLONGED_STATE_LOSS_STATIC_OBSTACLE",
+                    "robot_ids": stale_robot_ids,
+                },
+            )
+        critical_diagnostics = tuple(
+            dict(diagnostic) for diagnostic in fleet_decision.tick_metadata["critical_diagnostics"]
+        )
+        if critical_diagnostics:
+            log_json_event(
+                self._logger,
+                logging.CRITICAL,
+                "decision_tick_critical_alarm",
+                {
+                    "tick_id": tick_id,
+                    "alarm_codes": tuple(
+                        str(diagnostic["code"]) for diagnostic in critical_diagnostics
+                    ),
+                    "diagnostics": critical_diagnostics,
+                },
+            )
         if failure_tuple:
             log_json_event(
                 self._logger,
@@ -381,9 +425,7 @@ class CollisionMonitorService:
                 "decision_tick_publication_incomplete",
                 {
                     "tick_id": tick_id,
-                    "failed_robot_ids": tuple(
-                        failure.robot_id for failure in failure_tuple
-                    ),
+                    "failed_robot_ids": tuple(failure.robot_id for failure in failure_tuple),
                 },
             )
         return ServiceTickResult(

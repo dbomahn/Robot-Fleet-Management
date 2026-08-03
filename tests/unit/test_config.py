@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import fields
 from pathlib import Path
 
@@ -31,6 +32,7 @@ def test_environment_overrides_strings_numbers_and_booleans() -> None:
             "COLLISION_MONITOR_TICK_INTERVAL_SECONDS": "0.5",
             "COLLISION_MONITOR_MAXIMUM_EXACT_COMPONENT_SIZE": "12",
             "COLLISION_MONITOR_TRACE_DETAILED_GEOMETRY": "yes",
+            "COLLISION_MONITOR_LOG_FORMAT": "console",
             "COLLISION_MONITOR_RABBITMQ_STATE_QUEUE": "fleet.states",
             "COLLISION_MONITOR_RABBITMQ_ACTION_QUEUE_PREFIX": "fleet.actions.",
         }
@@ -39,6 +41,7 @@ def test_environment_overrides_strings_numbers_and_booleans() -> None:
     assert config.tick_interval_seconds == 0.5
     assert config.maximum_exact_component_size == 12
     assert config.trace_detailed_geometry is True
+    assert config.log_format == "console"
     assert config.rabbitmq_state_queue == "fleet.states"
     assert config.rabbitmq_action_queue_prefix == "fleet.actions."
 
@@ -60,6 +63,29 @@ def test_env_example_documents_every_configuration_default() -> None:
 
 def test_invalid_environment_boolean_is_rejected() -> None:
     with pytest.raises(ValueError, match="must be a Boolean value"):
-        MonitorConfig.from_environment(
-            {"COLLISION_MONITOR_TRACE_DETAILED_GEOMETRY": "sometimes"}
-        )
+        MonitorConfig.from_environment({"COLLISION_MONITOR_TRACE_DETAILED_GEOMETRY": "sometimes"})
+
+
+def test_invalid_log_format_is_rejected() -> None:
+    with pytest.raises(ValueError, match="log_format must be 'json' or 'console'"):
+        MonitorConfig(log_format="colourful")
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "robot_width_metres",
+        "safety_margin_metres",
+        "tick_interval_seconds",
+        "stale_timeout_seconds",
+        "cp_sat_time_limit_seconds",
+        "priority_low_battery_threshold",
+    ),
+)
+@pytest.mark.parametrize("value", (math.nan, math.inf, -math.inf))
+def test_non_finite_numeric_configuration_is_rejected(
+    field_name: str,
+    value: float,
+) -> None:
+    with pytest.raises(ValueError, match=rf"{field_name} must be finite"):
+        MonitorConfig(**{field_name: value})

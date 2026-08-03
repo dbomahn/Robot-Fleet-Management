@@ -17,6 +17,7 @@ from collision_monitor.transport.memory import (
 def action_message(robot_id: str = "robot-a") -> ActionMessage:
     """Build a complete output message for adapter tests."""
     return ActionMessage(
+        run_id="test-run",
         device_id=robot_id,
         action=Action.RESUME,
         tick_id="tick-00000001",
@@ -56,6 +57,6 @@ def test_action_publisher_records_success_and_injected_attempts() -> None:
         await publisher.publish_action(message)
 
         assert publisher.published == (message,)
-        assert publisher.attempt_counts[(message.tick_id, message.device_id)] == 2
+        assert publisher.attempt_counts[message.idempotency_key] == 2
 
     asyncio.run(scenario())

@@ -99,9 +99,7 @@ class RabbitMQTransport:
                 connection = await self._connect_factory(
                     self._config.rabbitmq_url,
                     timeout=self._config.rabbitmq_connection_timeout_seconds,
-                    reconnect_interval=(
-                        self._config.rabbitmq_reconnect_initial_delay_seconds
-                    ),
+                    reconnect_interval=(self._config.rabbitmq_reconnect_initial_delay_seconds),
                     client_properties={"connection_name": "collision-monitor"},
                 )
             except asyncio.CancelledError:
@@ -292,7 +290,7 @@ class RabbitMQTransport:
             content_type="application/json",
             content_encoding="utf-8",
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-            message_id=f"{message.tick_id}:{message.device_id}",
+            message_id=f"{message.run_id}:{message.device_id}:{message.tick_id}",
             type="collision_monitor.action",
             app_id="collision-monitor",
         )
@@ -302,9 +300,7 @@ class RabbitMQTransport:
             mandatory=True,
         )
         if confirmation is None or isinstance(confirmation, (Basic.Nack, Basic.Reject)):
-            raise RuntimeError(
-                f"RabbitMQ did not confirm action for robot {message.device_id!r}"
-            )
+            raise RuntimeError(f"RabbitMQ did not confirm action for robot {message.device_id!r}")
 
     async def close(self) -> None:
         """Close channels and the robust connection idempotently."""

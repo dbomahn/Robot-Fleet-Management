@@ -122,14 +122,11 @@ def build_objective_encoding(
     if missing:
         raise ValueError(f"priorities are missing for robots: {sorted(missing)!r}")
 
-    rank_bonuses = {
-        robot_id: len(ordered) - index - 1 for index, robot_id in enumerate(ordered)
-    }
+    rank_bonuses = {robot_id: len(ordered) - index - 1 for index, robot_id in enumerate(ordered)}
     maximum_rank_total = sum(rank_bonuses.values())
     utility_scale = maximum_rank_total + 1
     coefficients = {
-        robot_id: priorities[robot_id].final_score * utility_scale
-        + rank_bonuses[robot_id]
+        robot_id: priorities[robot_id].final_score * utility_scale + rank_bonuses[robot_id]
         for robot_id in ordered
     }
     if any(coefficient > _CP_SAT_INTEGER_LIMIT for coefficient in coefficients.values()):
@@ -157,11 +154,7 @@ def _component_no_goods(
     pairwise_constraints: Sequence[PairwiseCompatibility],
 ) -> tuple[NoGoodConstraint, ...]:
     """Regenerate no-goods from pairwise compatibility for independent provenance."""
-    return tuple(
-        no_good
-        for pair in pairwise_constraints
-        for no_good in pair.no_good_constraints()
-    )
+    return tuple(no_good for pair in pairwise_constraints for no_good in pair.no_good_constraints())
 
 
 def validate_component_decisions(
@@ -177,9 +170,7 @@ def validate_component_decisions(
             "solver decisions do not contain exactly the component robots"
         )
 
-    binary_assignment = {
-        robot_id: action_to_binary(decisions[robot_id]) for robot_id in ordered
-    }
+    binary_assignment = {robot_id: action_to_binary(decisions[robot_id]) for robot_id in ordered}
     for no_good in _component_no_goods(pairwise_constraints):
         if no_good.is_violated_by(binary_assignment):
             raise UnsafeOptimisationResultError(
@@ -223,9 +214,7 @@ class CpSatComponentOptimiser:
     ) -> None:
         self._config = config
         self._cp_sat = (
-            _load_default_backend()
-            if cp_sat_module is _USE_DEFAULT_BACKEND
-            else cp_sat_module
+            _load_default_backend() if cp_sat_module is _USE_DEFAULT_BACKEND else cp_sat_module
         )
         self._solver_factory = solver_factory
 
@@ -271,9 +260,7 @@ class CpSatComponentOptimiser:
             raise ValueError(f"component contains unknown robots: {sorted(unknown)!r}")
         missing_priorities = component_ids.difference(priorities)
         if missing_priorities:
-            raise ValueError(
-                f"priorities are missing for robots: {sorted(missing_priorities)!r}"
-            )
+            raise ValueError(f"priorities are missing for robots: {sorted(missing_priorities)!r}")
         for robot_id in ordered:
             if priorities[robot_id].robot_id != robot_id:
                 raise ValueError(f"priority key does not match robot {robot_id!r}")
@@ -304,9 +291,7 @@ class CpSatComponentOptimiser:
         objective = build_objective_encoding(ordered, priorities)
 
         model = self._cp_sat.CpModel()
-        variables = {
-            robot_id: model.new_bool_var(f"resume_{robot_id}") for robot_id in ordered
-        }
+        variables = {robot_id: model.new_bool_var(f"resume_{robot_id}") for robot_id in ordered}
 
         for no_good in no_goods:
             clause = []
@@ -320,16 +305,11 @@ class CpSatComponentOptimiser:
             model.add(variables[robot_id] == action_to_binary(action))
 
         model.maximize(
-            sum(
-                objective.coefficients[robot_id] * variables[robot_id]
-                for robot_id in ordered
-            )
+            sum(objective.coefficients[robot_id] * variables[robot_id] for robot_id in ordered)
         )
 
         solver = (
-            self._solver_factory()
-            if self._solver_factory is not None
-            else self._cp_sat.CpSolver()
+            self._solver_factory() if self._solver_factory is not None else self._cp_sat.CpSolver()
         )
         solver.parameters.max_time_in_seconds = self._config.cp_sat_time_limit_seconds
         solver.parameters.num_search_workers = 1
@@ -361,9 +341,7 @@ class CpSatComponentOptimiser:
             )
 
         decisions = {
-            robot_id: (
-                Action.RESUME if solver.value(variables[robot_id]) == 1 else Action.PAUSE
-            )
+            robot_id: (Action.RESUME if solver.value(variables[robot_id]) == 1 else Action.PAUSE)
             for robot_id in ordered
         }
         validate_component_decisions(

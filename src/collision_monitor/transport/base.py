@@ -15,6 +15,7 @@ class ActionMessage(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    run_id: str = Field(min_length=1)
     device_id: str = Field(min_length=1)
     action: Action
     tick_id: str = Field(min_length=1)
@@ -24,6 +25,11 @@ class ActionMessage(BaseModel):
     reason_context: tuple[str, ...] = Field(min_length=1)
     decision_source: DecisionSource
     grant_active: bool
+
+    @property
+    def idempotency_key(self) -> tuple[str, str, str]:
+        """Return the restart-safe logical action identity."""
+        return (self.run_id, self.device_id, self.tick_id)
 
 
 class StateDelivery(Protocol):
@@ -55,5 +61,5 @@ class ActionPublisher(Protocol):
     """Publish one validated action to its robot-specific destination."""
 
     async def publish_action(self, message: ActionMessage) -> None:
-        """Publish one idempotent tick action or raise on failure."""
+        """Publish one logical tick action or raise on delivery failure."""
         ...

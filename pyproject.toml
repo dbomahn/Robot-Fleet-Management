@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,23 +9,26 @@ description = "A safety-first collision monitor for robot fleets"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "aio-pika>=9.4,<10",
-    "ortools>=9.10,<10",
-    "pydantic>=2.7,<3",
-    "shapely>=2.0,<3",
+    "aio-pika==9.6.2",
+    "ortools==9.15.6755",
+    "pydantic==2.13.4",
+    "PyYAML==6.0.3",
+    "shapely==2.1.2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "mypy>=1.10,<2",
-    "pytest>=8.2,<9",
-    "pytest-cov>=5,<7",
-    "ruff>=0.5,<1",
-    "types-shapely>=2.0",
+    "mypy==1.20.2",
+    "pytest==8.4.2",
+    "pytest-cov==6.3.0",
+    "ruff==0.16.1",
+    "types-shapely==2.0.0.20250404",
+    "types-PyYAML==6.0.12.20260724",
 ]
 
 [project.scripts]
 collision-monitor = "collision_monitor.__main__:main"
+collision-monitor-simulator = "collision_monitor.simulator.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

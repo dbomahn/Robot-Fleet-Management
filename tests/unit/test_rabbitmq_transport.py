@@ -128,6 +128,7 @@ class FakeConnection:
 def action_message() -> ActionMessage:
     """Build a complete action-schema example."""
     return ActionMessage(
+        run_id="test-run",
         device_id="robot-a",
         action=Action.RESUME,
         tick_id="tick-00000001",
@@ -189,9 +190,7 @@ def test_publish_declares_durable_robot_queue_and_confirms_utf8_json() -> None:
         assert connection.channel_options == [
             {"publisher_confirms": True, "on_return_raises": True}
         ]
-        assert channel.exchange_declarations == [
-            ("collision_monitor", "direct", True, False)
-        ]
+        assert channel.exchange_declarations == [("collision_monitor", "direct", True, False)]
         assert channel.queue_declarations == [("actions.robot-a", True, False)]
         assert channel.queues[0].bindings == [(channel.exchange, "actions.robot-a")]
         published, routing_key, mandatory = channel.exchange.published[0]
@@ -199,7 +198,7 @@ def test_publish_declares_durable_robot_queue_and_confirms_utf8_json() -> None:
         assert mandatory is True
         assert published.content_type == "application/json"
         assert published.content_encoding == "utf-8"
-        assert published.message_id == "tick-00000001:robot-a"
+        assert published.message_id == "test-run:robot-a:tick-00000001"
         assert json.loads(published.body.decode("utf-8")) == message.model_dump(mode="json")
 
     asyncio.run(scenario())

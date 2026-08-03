@@ -293,9 +293,7 @@ class DeterministicComponentHeuristic:
             raise ValueError(f"component contains unknown robots: {sorted(unknown)!r}")
         missing_priorities = component_ids.difference(priorities)
         if missing_priorities:
-            raise ValueError(
-                f"priorities are missing for robots: {sorted(missing_priorities)!r}"
-            )
+            raise ValueError(f"priorities are missing for robots: {sorted(missing_priorities)!r}")
         for robot_id in ordered:
             if priorities[robot_id].robot_id != robot_id:
                 raise ValueError(f"priority key does not match robot {robot_id!r}")
@@ -304,8 +302,7 @@ class DeterministicComponentHeuristic:
         unknown_hard = set(hard_actions).difference(component_ids)
         if unknown_hard:
             raise ValueError(
-                "hard assignments contain robots outside the component: "
-                f"{sorted(unknown_hard)!r}"
+                f"hard assignments contain robots outside the component: {sorted(unknown_hard)!r}"
             )
         if any(not isinstance(action, Action) for action in hard_actions.values()):
             raise ValueError("hard assignments must contain Action values")
@@ -320,8 +317,7 @@ class DeterministicComponentHeuristic:
             )
         )
         seed_assignment = {
-            robot_id: action_to_binary(action)
-            for robot_id, action in hard_actions.items()
+            robot_id: action_to_binary(action) for robot_id, action in hard_actions.items()
         }
 
         greedy_assignment = self._greedy_pass(

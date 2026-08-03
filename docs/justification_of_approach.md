@@ -1,547 +1,1036 @@
-# Justification of approach — Collision Monitor
+# Justification of Approach — Collision Monitor
 
-## 1. Summary
+## 1. Executive summary
 
-The implemented monitor makes one binary decision for each known robot on each
-tick: `Pause` or `Resume`. It does not change routes. It constructs
-conservative one-step action envelopes, evaluates all four action combinations
-for every unordered robot pair, decomposes the resulting conflict graph and
-solves each connected component. Small components use time-bounded CP-SAT;
-other components use a deterministic bounded heuristic. Grants, waiting age
-and an all-Pause repair reduce oscillation and avoid some zero-progress
-outcomes. A fleet-wide validator checks the selected envelopes before the
-service publishes actions. [T1, T3–T9]
+I treat the Collision Monitor as a **discrete-time resource-scheduling problem on fixed routes**. At each approximately one-second tick, the routes are already given; the monitor decides only whether each robot may execute its next movement (`Resume`) or must remain at its current pose (`Pause`).
 
-The decision engine is independent of RabbitMQ. The asynchronous service owns
-state ingestion, clocks, ticks, traces and publication; the engine receives an
-immutable snapshot plus explicit `now_ms` and `tick_id` values. [T10]
-The [implemented architecture](architecture.md) contains the corresponding
-Mermaid component and decision-flow diagrams.
+The implemented decision process is:
+
+1. retain the latest valid state for every known robot;
+2. construct conservative occupied regions for both possible actions;
+3. evaluate all four `Pause`/`Resume` combinations for every unordered robot pair;
+4. represent unsafe combinations as hard binary constraints;
+5. build one conflict graph and solve its connected components independently;
+6. use time-limited CP-SAT for small components and a deterministic bounded heuristic otherwise;
+7. retain a geometrically valid right-of-way decision until the selected robot clears the conflict;
+8. repair avoidable all-Pause decisions where a validated progress action is found;
+9. validate the complete fleet decision independently of the optimiser and graph decomposition;
+10. publish one logical action per known robot and emit a structured, reproducible tick trace.
+
+This is a **component-decomposed matheuristic**: the feasibility model is exact, small components are optimised with a mathematical-programming solver, and a bounded heuristic protects the service-time budget when exact optimisation is unsuitable.
+
+The deadline strongly influenced the scope. I prioritised correct geometry, explicit feasibility constraints, deterministic behaviour, adversarial tests, observability and a complete runnable service. I did not implement route replanning, full multi-agent path finding, a long rolling horizon, Large Neighbourhood Search or Benders decomposition. Those methods would require additional information and validation effort without improving the most important deliverable: a safe, understandable and reproducible `Pause`/`Resume` monitor.
+
+---
 
 ## 2. Scope, assumptions and guarantees
 
-### 2.1 Scope and state assumptions
+### 2.1 Scope
 
-The model uses the latest accepted state for each robot. A source timestamp
-older than the stored timestamp is rejected; an equal timestamp is accepted in
-receive order as a corrected retransmission. Staleness is calculated from
-local receive time rather than the robot timestamp. [T11]
+The monitor does not assign tasks, generate routes or change path geometry. Its input is the latest reported state and remaining path of each robot. Its output is one binary decision per known robot:
 
-The geometric reasoning assumes that the reported current pose and next path
-pose describe the movement to be controlled, that the robot follows the
-published action, and that its centre translates along the straight segment
-between those poses during a Resume step. The configured margin is a policy
-input, not a measured uncertainty certificate.
+- `Resume`: authorise the next path movement;
+- `Pause`: remain at the current pose.
 
-### 2.2 Safety statement
+The implementation follows the assignment's discrete movement semantics: after `Resume`, the simulator advances exactly one path node on the next step; after `Pause`, it does not move.
 
-Safety is conditional on the state, dimensions, margin and one-step motion
-model being conservative representations of the physical system. Within that
-model, boundary contact is unsafe and every selected action set is subjected
-to a fleet-wide pairwise envelope check before publication. The validator is
-independent of CP-SAT, the heuristic and conflict-graph decomposition, but it
-deliberately reuses the same geometry model; it cannot detect an error in that
-shared model. [T2, T9]
+A paused robot remains a physical obstacle. This point is central to both the safety constraints and the deadlock analysis.
 
-If selected envelopes intersect, the affected graph components are replaced
-with Pause decisions and checked again. If even the stationary envelopes
-intersect, the engine records a critical alarm, does not commit grant or
-waiting-age state, and returns explicit fail-safe Pause decisions. The service
-publishes those Pause commands with the alarm; it does not describe the
-already-intersecting geometry as safe. [T9]
+### 2.2 State handling
 
-### 2.3 Liveness statement
+States are stored by `device_id`. Staleness is measured from local receive time rather than from the robot's source timestamp. Older source timestamps are rejected; an equal timestamp may be accepted as a corrected retransmission according to the documented policy.
 
-Liveness is conditional on the available Pause/Resume controls, fresh enough
-state, and the implemented solver or bounded heuristic finding a validated
-positive-progress assignment. An active grant prevents priority changes alone
-from reversing an established safe order, and waiting age affects later
-ordering after the grant is released. [T7, T8]
+A stale robot is forced to `Pause` and remains represented by its last known occupied region. The store does not automatically remove it merely because time has elapsed. Prolonged state loss emits the alarm:
 
-The heuristic and its repair pass are bounded, not exhaustive. Failure to find
-progress therefore does **not** prove that no progress assignment exists. When
-the implemented search does not find a validated progress assignment, the
-component receives fail-safe Pause decisions and the
-`UNRESOLVABLE_WITH_PAUSE_RESUME` alarm. [T6, T8]
+```text
+PROLONGED_STATE_LOSS_STATIC_OBSTACLE
+```
 
-### 2.4 Stale robots
+This may block progress indefinitely, but automatically removing an unobserved robot would create an unjustified collision risk.
 
-The latest-state store does not evict robots because time has elapsed. A stale
-robot remains a known stationary obstacle indefinitely and is forced to Pause.
-Each stale tick includes the `PROLONGED_STATE_LOSS_STATIC_OBSTACLE` alarm.
-This is a deliberate safety policy and may block progress for other robots.
-[T9, T11]
+After a service restart, a robot for which no new state has been received is unknown rather than safely stationary: the current implementation does not persist its last pose. A production recovery procedure should therefore wait for fresh states from the expected fleet or restore state from a trusted persistent source before authorising movement.
 
-## 3. Geometric safety model
+### 2.3 Safety statement
 
-### 3.1 Pose and action notation
+Safety is conditional on the reported poses, robot dimensions, configured margin and one-step motion model being conservative representations of the physical system.
 
-For robot (i) at tick (t), the pose is
+Within that model:
 
-\[
-q_{i,t}=(p_{x,i,t},p_{y,i,t},\theta_{i,t}).
-\]
+- boundary contact is unsafe;
+- every unsafe pairwise action combination is excluded from the feasible region;
+- every final fleet decision is checked again by a pairwise geometric validator before publication.
 
-The next pose derived from the remaining path is denoted
-\(\widehat q_{i,t}\). The separate binary action variable is
+The final validator is separate from CP-SAT, the heuristic and the conflict-graph decomposition. It can therefore catch an optimisation-encoding, component-construction or solver-integration defect. It deliberately reuses the same geometry implementation, so it cannot detect a common error in the geometric model itself.
 
-\[
-z_{i,t}\in\{0,1\},\qquad
-z_{i,t}=0\ \text{for Pause},\qquad
-z_{i,t}=1\ \text{for Resume}.
-\]
+If the selected action envelopes intersect, the affected component is replaced with fail-safe Pause decisions and validated again. If even the stationary envelopes intersect, the input state is already unsafe. The engine emits a critical alarm and does not represent that situation as collision-free.
 
-The simulator advances exactly one path node on the next step after Resume and
-does not move after Pause. An empty path keeps the current pose and marks the
-robot at goal. [T1, T14]
+### 2.4 Conditional liveness
 
-### 3.2 Implemented footprint and motion envelopes
+The monitor promotes progress through:
 
-Let (L=1.430\,\mathrm{m}), (W=0.630\,\mathrm{m}), and
+- a primary objective that maximises the number of robots resumed safely;
+- persistent right-of-way grants that prevent premature order reversal;
+- waiting-age terms that reduce repeated postponement;
+- a separate repair pass for avoidable all-Pause outcomes.
+
+Liveness is nevertheless conditional. The available controls are only `Pause` and `Resume`, routes are fixed, states may become stale, and the heuristic repair is bounded rather than exhaustive. Failure to find progress does not prove that no mathematical progress assignment exists.
+
+When the implemented search does not produce a validated positive-progress assignment, the component remains paused and the monitor emits:
+
+```text
+UNRESOLVABLE_WITH_PAUSE_RESUME
+```
+
+This is an explicit and safe failure mode rather than an unsupported claim of universal liveness.
+
+---
+
+## 3. One-tick mathematical model
+
+### 3.1 State transition and decision variable
+
+Let \(\mathcal R_t\) be the set of robots known at tick \(t\). Robot \(i\)'s reported pose is
 
 \[
-R=[-L/2,L/2]\times[-W/2,W/2].
+q_{i,t} =
+\left(
+p^x_{i,t},
+p^y_{i,t},
+\theta_{i,t}
+\right),
 \]
 
-With the length initially aligned to the positive (x)-axis, the physical
-footprint at (q=(p_x,p_y,\theta)) is
+and \(\widehat q_{i,t}\) is the next pose derived from its remaining path.
+
+Define the binary action variable
+
+\[
+z_{i,t} =
+\begin{cases}
+1, & \text{Resume},\\
+0, & \text{Pause}.
+\end{cases}
+\]
+
+Under the assignment's one-node-per-step semantics,
+
+\[
+q_{i,t+1} =
+\begin{cases}
+\widehat q_{i,t}, & z_{i,t}=1,\\
+q_{i,t}, & z_{i,t}=0.
+\end{cases}
+\]
+
+This is not a route-planning model. The path and next node are inputs; \(z_{i,t}\) only controls whether the next movement is authorised during the present tick.
+
+### 3.2 Oriented footprint
+
+The robot is represented as a rectangle of length
+
+\[
+L=1.430\ \mathrm m
+\]
+
+and width
+
+\[
+W=0.630\ \mathrm m,
+\]
+
+centred at its reported pose. Before rotation, the length is aligned with the positive \(x\)-axis. For pose \(q=(p^x,p^y,\theta)\), the unbuffered footprint is
 
 \[
 F(q)=
 \begin{bmatrix}
 \cos\theta & -\sin\theta\\
 \sin\theta & \cos\theta
-\end{bmatrix}R+
-\begin{bmatrix}p_x\\p_y\end{bmatrix}.
+\end{bmatrix}
+\left(
+[-L/2,L/2]\times[-W/2,W/2]
+\right)
++
+\begin{bmatrix}
+p^x\\
+p^y
+\end{bmatrix}.
 \]
 
-Shapely approximates a round buffer with straight chords. With
-\(N=8\) segments per quadrant and requested margin \(\delta\), the code uses
+A configurable margin \(\delta\geq0\) expands this footprint. Because Shapely represents a round buffer using polygonal chords, the implementation compensates the requested distance. With \(N\) segments per quadrant, it applies
 
 \[
-\delta'=
+\delta' =
 \frac{\delta}{\cos\!\left(\frac{\pi}{4N}\right)}
-\left(1+10^{-12}\right).
+(1+\varepsilon),
 \]
 
-The chord apothem is then greater than \(\delta\), so the polygonal buffer
-circumscribes rather than under-approximates the requested round offset. The
-Pause envelope is the compensated buffered current footprint. [T2]
+for a very small numerical guard \(\varepsilon>0\). This makes the polygonal buffer circumscribe, rather than under-approximate, the requested round margin.
 
-For equal headings, the Resume envelope is
+### 3.3 Action-dependent occupied regions
+
+For `Pause`, the occupied region is the compensated buffered footprint at the current pose:
 
 \[
-E^1_{i,t}=\operatorname{conv}\!\left(
-F_{\delta'}(q_{i,t})\cup
+E^0_{i,t}=F_{\delta'}(q_{i,t}).
+\]
+
+For a `Resume` step with unchanged heading, the occupied region is
+
+\[
+E^1_{i,t}
+=
+\operatorname{conv}
+\left(
+F_{\delta'}(q_{i,t})
+\cup
 F_{\delta'}(\widehat q_{i,t})
-\right),
+\right).
 \]
 
-which covers straight translation between the endpoint footprints. For a
-heading change, endpoint rectangles alone are insufficient. The implementation
-uses
+This convex hull covers straight translation between the endpoint footprints.
+
+For a heading change, the endpoint rectangles alone are not sufficient. The implementation uses the rectangle's circumscribed radius,
 
 \[
-\rho=\frac{1}{2}\sqrt{L^2+W^2}+\delta'
+\rho =
+\frac{1}{2}\sqrt{L^2+W^2}+\delta',
 \]
 
-and constructs an axis-aligned square of half-size \(\rho\) at each endpoint.
-The convex hull of those squares covers every intermediate centre on the
-straight segment and every rectangle heading at that centre. This is more
-conservative than the equal-heading hull and may reduce throughput. [T2]
+constructs a square of half-size \(\rho\) at each endpoint centre, and takes the convex hull of those squares. This contains every rectangle orientation whose centre lies on the straight segment between the two poses.
 
-This implemented coverage is not a formal continuous-time certificate for a
-physical robot. Such certification would also require verified bounds for
-pose interpolation, localisation error, actuation, braking and communication
-latency. Section 12.3 separates that work from the geometry already present.
+The heading-change envelope is intentionally conservative. It may create false conflicts and reduce throughput, but it avoids under-representing intermediate occupancy under the implemented one-step centre-motion model.
 
-### 3.3 Pairwise compatibility
+This geometry is not presented as a certified physical continuous-time safety case. Certification would additionally require measured bounds for localisation, control tracking, braking, communication delay and the actual interpolation followed by the vehicle controller.
 
-For every unordered pair \(\{i,j\}\), the implementation evaluates
+### 3.4 Pairwise compatibility and no-good constraints
+
+For every unordered pair \(\{i,j\}\), the monitor evaluates all four action combinations:
 
 \[
-(z_i,z_j)\in\{(0,0),(0,1),(1,0),(1,1)\}.
+(z_i,z_j)\in
+\{(0,0),(0,1),(1,0),(1,1)\}.
 \]
 
-An intersecting envelope pair is forbidden. Each forbidden assignment
-\((a,b)\) is stored as the two-literal clause
+A combination is unsafe if the corresponding occupied regions intersect. Each unsafe combination becomes a hard binary no-good:
+
+| Unsafe assignment | Equivalent constraint |
+|---|---:|
+| \((z_i,z_j)=(0,0)\) | \(z_i+z_j\geq1\) |
+| \((z_i,z_j)=(0,1)\) | \(z_j\leq z_i\) |
+| \((z_i,z_j)=(1,0)\) | \(z_i\leq z_j\) |
+| \((z_i,z_j)=(1,1)\) | \(z_i+z_j\leq1\) |
+
+The familiar mutual-exclusion constraint \(z_i+z_j\leq1\) is therefore only one possible relation. The model also captures implications. For example,
 
 \[
-(z_i\ne a)\lor(z_j\ne b).
+z_i\leq z_j
 \]
 
-The conflict graph contains an edge whenever at least one of the four
-assignments is forbidden. All-safe pairs create no edge. [T3]
+means that robot \(i\) may move only if robot \(j\) also moves out of its blocking position.
 
-## 4. Conflict graph and component decisions
+If \((0,0)\) is unsafe, the robots' current occupied regions already intersect. The new action decision cannot undo that observed violation instantaneously; the monitor raises a critical alarm and returns fail-safe Pause decisions.
 
-`AllPairsCandidateGenerator.generate` currently emits every unordered pair, so
-candidate generation is \(O(n^2)\). Connected components are produced by
-sorted breadth-first search. Isolated active robots Resume immediately,
-at-goal robots Pause, and stale robots are forced to Pause. [T3, T9]
+### 3.5 Feasible region
 
-Components are solved independently because no pairwise no-good joins two
-different components. The final validator nevertheless checks every selected
-pair across the fleet, including nominally separate components. [T3, T9]
+For a connected conflict component \(C\), let \(\mathcal N_C\) be its set of forbidden assignments and let \(\mathcal H_C\) contain valid hard assignments, such as stale robots forced to Pause or an active, geometrically valid grant forced to Resume.
 
-## 5. Priority and lexicographic objective
-
-Let raw deadline and battery values be (D_i) and (B_i); they are not reused
-as urgency symbols. Define:
-
-- \(V_0\): configured base progress value;
-- \(V_i^L\): configured loaded bonus or zero;
-- \(U_i^D\): deadline urgency derived from non-negative slack;
-- \(U_i^B\): configured low-battery bonus or zero;
-- \(V_i^W\): capped waiting-age bonus;
-- \(V_i^G\): active-grant continuation bonus or zero;
-- \(V_i^C\): clearance count times the per-conflict bonus.
-
-For horizon (H_D), maximum deadline urgency (U^D_{\max}), and explicit
-`now_ms`, the implemented integer deadline term is
+The feasible region is
 
 \[
-s_i=\max(D_i-\text{now\_ms},0),
+\mathcal F_C =
+\left\{
+z\in\{0,1\}^{|C|}:
+z\text{ satisfies every no-good in }\mathcal N_C
+\text{ and every assignment in }\mathcal H_C
+\right\}.
 \]
+
+Deadlines, battery level, load state and waiting time do not relax these constraints. They are used only to choose among solutions already inside \(\mathcal F_C\).
+
+---
+
+## 4. Conflict graph and decomposition
+
+The monitor builds an undirected graph \(G=(V,E)\):
+
+- one vertex represents one robot;
+- an edge \((i,j)\) is present if at least one of the four pairwise action assignments is unsafe.
+
+A pair for which all four assignments are safe creates no edge.
+
+Connected components are found deterministically using sorted traversal. Components can be solved independently because no pairwise constraint joins robots in different components. This is an exact decomposition of the current pairwise model, not a heuristic clustering step.
+
+The practical benefits are:
+
+- the optimisation dimension depends on local contention rather than total fleet size;
+- each component receives its own solver status, time limit and trace;
+- large, geographically separated groups do not create one unnecessarily large model;
+- future parallel execution is possible without changing the mathematical formulation.
+
+Isolated, fresh robots that are not at goal Resume immediately. Robots at goal Pause. Stale robots remain stationary obstacles and are forced to Pause.
+
+The final validator still checks all selected fleet-wide action pairs, including robots assigned to different nominal components. This duplicates some work deliberately to provide a last line of defence against graph-construction or solver-integration defects.
+
+---
+
+## 5. Feasible solutions, throughput and priority
+
+This section separates three levels of decision-making:
+
+1. **Safety constraints define the feasible region.**
+2. **The primary objective maximises safe one-step progress.**
+3. **Priority selects among maximum-progress feasible solutions.**
+
+A priority score cannot make an unsafe action feasible.
+
+### 5.1 Primary objective
+
+For component \(C\), the first objective is
 
 \[
-U_i^D=
-\left\lfloor
-\frac{U^D_{\max}\left(H_D-\min(s_i,H_D)\right)}{H_D}
-\right\rfloor.
+\max_{z\in\mathcal F_C}
+\sum_{i\in C} z_i.
 \]
 
-The secondary score is
+This maximises the number of robots authorised to execute their next movement during the current tick.
+
+It prevents an all-Pause solution being preferred when a feasible positive-progress assignment has been identified. It is a one-period throughput objective, not a claim of global route optimality.
+
+### 5.2 Secondary priority score
+
+Several feasible assignments may Resume the same number of robots. A bounded integer score then represents business urgency and temporal fairness:
 
 \[
-S_i=V_0+V_i^L+U_i^D+U_i^B+V_i^W+V_i^G+V_i^C.
+S_i =
+V_0
++V_i^{\mathrm{load}}
++U_i^{\mathrm{deadline}}
++U_i^{\mathrm{battery}}
++V_i^{\mathrm{wait}}
++V_i^{\mathrm{grant}}
++V_i^{\mathrm{clear}}.
 \]
 
-For a component of size (k), `priority_bounds` calculates
+The terms have the following meanings:
+
+| Term | OR interpretation | Practical role |
+|---|---|---|
+| \(V_0\) | base processing value | assigns positive value to progress |
+| \(V_i^{\mathrm{load}}\) | job-class weight | favours loaded robots |
+| \(U_i^{\mathrm{deadline}}\) | due-date urgency | increases as non-negative deadline slack decreases |
+| \(U_i^{\mathrm{battery}}\) | state-dependent urgency | applies below the configured battery threshold |
+| \(V_i^{\mathrm{wait}}\) | ageing term | increases with consecutive denied ticks, up to a cap |
+| \(V_i^{\mathrm{grant}}\) | sequence-continuation value | supports an active right-of-way decision |
+| \(V_i^{\mathrm{clear}}\) | blocking-clearance contribution | rewards movement that removes several conflicts |
+
+The deadline, battery and waiting features are converted to bounded integers. This keeps the objective transparent, deterministic and suitable for CP-SAT.
+
+### 5.3 Lexicographic implementation
+
+The intended ordering is:
+
+1. maximise the number of resumed robots;
+2. subject to that, maximise aggregate secondary score;
+3. subject to both, use a deterministic robot-identifier rank.
+
+The implementation assigns a sufficiently large base reward \(M_C\) to every Resume decision:
 
 \[
-S_{\max}(k)=V_0+V^L_{\max}+U^D_{\max}+U^B_{\max}
-+A_{\max}V^W_{\text{tick}}+V^G_{\max}+(k-1)V^C_{\text{edge}},
+\max_{z\in\mathcal F_C}
+\sum_{i\in C}(M_C+S_i)z_i.
 \]
+
+Let \(S_{\max}(C)\) be a valid upper bound on the total secondary score in component \(C\). Choosing
 
 \[
-S^{C}_{\max}=kS_{\max}(k),qquad M_C=S^{C}_{\max}+1.
+M_C>S_{\max}(C)
 \]
 
-Each Resume coefficient first receives (M_C+S_i). One extra Resume therefore
-improves this utility by at least
+guarantees that one additional Resume dominates every possible secondary-score advantage of a solution with one fewer resumed robot.
+
+A smaller, final rank term breaks otherwise exact ties without changing throughput or priority dominance.
+
+### 5.4 Practical consequence
+
+A loaded robot with an urgent deadline may still be forced to Pause if its Resume action is infeasible.
+
+Conversely, a lower-priority robot may be selected when moving it is the only feasible way to release occupied capacity. Priority ranks safe alternatives; it does not decide which physical constraints may be ignored.
+
+---
+
+## 6. Exact and heuristic solution methods
+
+### 6.1 Time-limited CP-SAT for small components
+
+For a component below the configured size threshold, the monitor solves
 
 \[
-M_C-S^{C}_{\max}=1,
+\begin{aligned}
+\max \quad
+& \sum_{i\in C}(M_C+S_i)z_i,\\
+\text{subject to}\quad
+& z\in\mathcal F_C,\\
+& z_i\in\{0,1\}
+\qquad \forall i\in C.
+\end{aligned}
 \]
 
-even against the maximum possible aggregate secondary-score difference. [T4]
+The OR-Tools CP-SAT solver uses:
 
-The optimiser then adds a deterministic robot-ID rank. If
-\(r_i=k-\operatorname{index}(i)-1\),
-\(R_{\max}=\sum_i r_i=k(k-1)/2\), and
-\(\lambda=R_{\max}+1\), the final CP-SAT coefficient is
+- a strict per-component wall-time limit, nominally 50 ms;
+- one worker;
+- a fixed random seed;
+- deterministic ordering;
+- disabled verbose solver output.
+
+The status policy is:
+
+| Status | Action |
+|---|---|
+| `OPTIMAL` | use the proven optimal assignment |
+| `FEASIBLE` | use the validated incumbent without claiming optimality |
+| `UNKNOWN` without an incumbent | use the heuristic fallback |
+| `INFEASIBLE` | record the diagnostic and use the fallback |
+| `MODEL_INVALID` | treat as an internal error and do not publish unchecked actions |
+
+The formulation is exact, but a time-limited call does not necessarily prove optimality.
+
+### 6.2 Deterministic bounded fallback
+
+The fallback solves the same hard constraints but does not claim an optimal solution.
+
+It:
+
+1. orders unassigned robots by the same utility used in the exact model;
+2. tentatively assigns `Resume` to the highest-ranked robot;
+3. propagates all consequences of the two-literal no-goods;
+4. rejects that tentative assignment if it creates a contradiction;
+5. tries `Pause` instead;
+6. continues until all variables are assigned.
+
+There is no unrestricted recursive backtracking. This keeps execution bounded and reproducible.
+
+If the first pass finds no progress or fails, a repair pass tests a configured number of candidate escape robots or implication-closed groups. It prefers decisions with high conflict-clearance value and validates every completed assignment.
+
+### 6.3 What is exact and what is heuristic
+
+- **Feasibility is mandatory.** Every published assignment must satisfy all no-goods and the fleet-wide geometric validator.
+- **Optimality is conditional.** CP-SAT may prove it for a small component; the fallback may return a feasible but suboptimal result.
+- **Search completeness is not claimed.** A bounded fallback may fail to find a positive-progress solution that a deeper search could discover.
+
+The heuristic protects the real-time service budget; it does not relax safety.
+
+### 6.4 Why use a hybrid method?
+
+A fixed priority rule is fast but cannot correctly represent asymmetric implications such as \(z_i\leq z_j\). A single fleet-wide exact model is mathematically neat but its solution time depends on the size and density of the largest coupled conflict.
+
+The hybrid method uses exact optimisation where the local problem is small and predictable, and deterministic construction where it is not. This is a practical OR compromise between objective quality and computational reliability.
+
+---
+
+## 7. Time complexity and the one-second budget
+
+Let:
+
+- \(n\) be the number of known robots;
+- \(m\) be the number of conflict-graph edges;
+- \(k\) be the size of one connected component;
+- \(p\) be the number of two-literal no-goods in that component;
+- \(r\) be the number of repair candidates actually examined.
+
+### 7.1 Pairwise model construction
+
+The present implementation examines every unordered pair:
 
 \[
-c_i=\lambda(M_C+S_i)+r_i.
+\binom n2=\frac{n(n-1)}2.
 \]
 
-Because \(\lambda>R_{\max}\), a one-point utility difference dominates every
-possible aggregate rank difference. The tertiary tie-break cannot weaken
-throughput dominance. [T4, T5]
-
-## 6. Exact and heuristic decision logic
-
-### 6.1 CP-SAT
-
-For components no larger than the configured exact-size threshold,
-`CpSatComponentOptimiser.optimise` creates one Boolean Resume variable per
-robot, adds every forbidden pair assignment as a Boolean clause, applies safe
-grant hard assignments and maximises the coefficients above. It uses one
-worker, a fixed seed, disabled verbose logging and the configured wall-time
-limit. `OPTIMAL` and `FEASIBLE` incumbents are usable; lack of an incumbent
-requests fallback; `MODEL_INVALID` raises an internal error. Every returned
-assignment is independently checked against the no-goods. [T5]
-
-### 6.2 Deterministic fallback
-
-The heuristic sorts robots by the same objective coefficients. For each
-unassigned robot it tries Resume, propagates two-literal clauses to a fixed
-point and tries Pause if Resume contradicts the current assignment. It performs
-no recursive backtracking. If the greedy result has no progress or fails, the
-repair pass tries at most the configured number of escape candidates, ordered
-by clearance and utility. Each candidate may force a group through propagation;
-remaining variables are tentatively paused and the completed assignment is
-validated. [T6]
-
-The result is either a validated assignment with progress or an explicit
-fail-safe no-progress result. It is not an infeasibility proof. [T6]
-
-## 7. Complexity
-
-Let (n) be the fleet size, (k) a component size, (m) the number of graph
-edges, (p) the number of two-literal clauses in that component, and
-\(r\leq\min(k,R)\) the number of repair candidates allowed by configured cap
-\(R\).
-
-- all-pairs compatibility construction: \(O(n^2)\) geometric checks;
-- adjacency construction and breadth-first decomposition: \(O(n+m)\), plus
-  deterministic sorting;
-- final fleet validation: \(O(n^2)\) envelope comparisons;
-- stored graph, clauses and working assignments: \(O(n+m)\) fleet memory and
-  \(O(k+p)\) heuristic working memory.
-
-In `_propagate`, at most (k) assignments can be added and each pass scans all
-\(p\) two-literal clauses, giving \(O(kp)\). `_try_assignment` also copies up
-to (k) assignments. The greedy pass makes at most two trials for each of
-\(k\) robots, so a conservative bound is
+It evaluates four action combinations for each pair. Treating the low-complexity polygon operations as bounded geometric work gives
 
 \[
-T_{\text{greedy}}=O\!\left(k^2(p+1)\right).
+T_{\mathrm{pair}}(n)=O(n^2).
 \]
 
-For each of (r) repair candidates, the code performs one Resume trial and up
-to (k) Pause trials, each with propagation and assignment copying. Therefore
+### 7.2 Graph construction
+
+After pairwise compatibility is available:
+
+- adjacency construction is \(O(n+m)\);
+- connected-component traversal is \(O(n+m)\), excluding deterministic sorting.
+
+### 7.3 Exact optimisation
+
+Binary optimisation has exponential worst-case complexity in component size \(k\). No polynomial guarantee is claimed.
+
+The practical degradation is controlled by the wall-time limit:
+
+1. small or easy component: optimality may be proved;
+2. harder component: a feasible incumbent may be returned without proof;
+3. no incumbent within the limit: fallback is used.
+
+The most relevant scale measure is therefore the largest connected component, not only the total fleet size.
+
+### 7.4 Heuristic complexity
+
+The implementation repeatedly scans the component's clauses during propagation. A conservative bound for the greedy pass is
 
 \[
-T_{\text{repair}}=O\!\left(rk^2(p+1)\right),
+O\!\left(k^2(p+1)\right).
 \]
 
-which becomes \(O(k^3(p+1))\) if the configured candidate cap permits all
-robots. Sorting adds \(O(k\log k)\). This follows the actual repeated clause
-scans rather than assuming a single additive clause pass. [T3, T6, T9]
+The bounded repair pass examines at most \(r\) candidates, giving
 
-CP-SAT retains exponential worst-case complexity; the implementation bounds
-elapsed solver time rather than claiming a polynomial bound. [T5]
+\[
+O\!\left(rk^2(p+1)\right).
+\]
 
-## 8. Grants, order retention and progress safeguards
+If the configured cap allows every robot to be examined, \(r\leq k\). Working memory is \(O(k+p)\).
 
-### 8.1 Concrete premature-reversal example
+These are conservative implementation-level bounds, not claims about an idealised linear-time propagator.
 
-The regression component contains `robot-a` and `robot-b` with the
-Resume/Resume assignment forbidden. On tick 1, raw utilities are 200 for A and
-100 for B, so A Resumes and receives a grant. On tick 2, the raw order is
-reversed: A has 100 while B has either 201 or 1,000. Reversing the action to
-\((z_A,z_B)=(0,1)\) would pre-empt A before its conflict cleared.
+### 7.5 Independent validation
 
-`GrantManager._safe_relevant_grants` retains A's geometrically feasible grant
-as a hard Resume assignment. The optimiser consequently keeps
-\((z_A,z_B)=(1,0)\) for five ticks despite alternating raw priority. This exact
-sequence is asserted by
-`test_alternating_raw_priority_does_not_preempt_active_grant`. [T7]
+The final fleet-wide validator performs another all-pairs check:
 
-### 8.2 Release, merge and fairness
+\[
+O(n^2).
+\]
 
-`GrantManager._reconcile_lifecycle` releases a grant at goal, after configured
-conflict clearance, on staleness or sufficiently long disappearance, or at the
-maximum lease fault guard. If components merge, `_safe_relevant_grants`
-considers grants by acquisition tick and robot ID and keeps only a compatible
-oldest-first set. A non-terminal paused robot gains capped waiting age; Resume,
-goal or disappearance resets or removes it. [T7]
+The duplication is reasonable for a small take-home fleet because it protects the primary safety invariant. It is not the intended architecture for a 1,000-robot decision domain.
 
-### 8.3 All-Pause handling
+### 7.6 One-hertz service budget
 
-`GrantManager._validate_or_repair_components` invokes the bounded heuristic
-when an entire conflict component is paused. A validated escape robot or
-implication-closed group is accepted and may receive a grant. Otherwise every
-robot remains paused and `UNRESOLVABLE_WITH_PAUSE_RESUME` is emitted. This is
-honest fail-safe behaviour, not proof that the component has no mathematical
-progress assignment. [T8]
+The approximately one-second update interval must also accommodate:
 
-## 9. Why the lower-priority blocker may move
+- state aggregation and validation;
+- envelope construction;
+- graph construction;
+- grant and fairness updates;
+- final validation;
+- structured tracing;
+- action publication.
 
-Suppose a lower-priority blocker (B) is already in a junction and a
-higher-priority robot (H) approaches. If geometry permits B to Resume while H
-Pauses, but forbids H Resume while B Pauses, then priority cannot make H's
-unsafe action feasible. When \((z_B,z_H)=(1,0)\) is the only validated
-positive-progress choice, the throughput-first objective moves B and pauses H.
-[T3, T9]
+The current design limits each exact component solve. A production improvement would also impose one global tick deadline and allocate the remaining time explicitly across components.
+
+---
+
+## 8. Deadlock, oscillation and progress
+
+### 8.1 A premature reversal that creates a new blocking state
+
+Consider two robots \(A\) and \(B\) using the same narrow resource in opposite directions.
+
+At tick \(t\), a feasible order is
+
+\[
+(z_A,z_B)=(1,0).
+\]
+
+Robot \(A\) starts clearing the resource while \(B\) waits.
+
+Suppose a stateless policy reverses the order at tick \(t+1\) because \(B\)'s raw priority has become slightly higher:
+
+\[
+(1,0)\rightarrow(0,1).
+\]
+
+Robot \(A\) is now paused while still occupying capacity needed by \(B\). In the new geometry, the model may contain
+
+\[
+z_A\leq z_B,
+\qquad
+z_B\leq z_A,
+\qquad
+z_A+z_B\leq1.
+\]
+
+Together, these leave only
+
+\[
+(z_A,z_B)=(0,0).
+\]
+
+A feasible sequence existed, but pre-empting the selected robot before it cleared the constrained area created a zero-progress blocking state.
+
+The same mechanism extends to a cycle of three or more robots, including the assignment's junction example: each paused robot may occupy capacity needed by the next robot in the sequence.
+
+### 8.2 Rule that prevents premature reversal
+
+The grant manager treats the selected right of way as a temporary non-pre-emptive scheduling commitment.
+
+A grant is retained while:
+
+- the robot remains in a relevant conflict;
+- forcing it to Resume is still geometrically safe;
+- it has not reached its goal;
+- its state remains fresh;
+- the configured clearance or fault-guard release condition has not been met.
+
+Priority changes alone do not reverse the order.
+
+If previously independent components merge and active grants conflict, the oldest geometrically feasible grant is preserved and newer incompatible grants are revoked with explicit reason codes.
+
+The alternating-priority regression test verifies that a valid grant remains active even when raw priorities swap repeatedly.
+
+### 8.3 Avoiding an unnecessary all-Pause decision
+
+The primary objective will not choose all-Pause when a positive-progress assignment with a better objective has been found. A separate repair step protects against solver timeout, bounded-heuristic limitations and integration defects.
+
+```text
+if every non-terminal robot in a component is paused:
+    rank candidate Resume decisions by:
+        clearance contribution,
+        waiting age,
+        business score,
+        deterministic identifier
+
+    for each candidate within the repair limit:
+        assign candidate to Resume
+        propagate every forced implication
+
+        if the forced group is feasible:
+            pause the remaining unassigned robots
+            validate the complete assignment
+
+            if validation passes:
+                accept the repair
+                create or retain a continuation grant
+                stop
+
+    if no validated repair is found:
+        keep the component paused
+        emit UNRESOLVABLE_WITH_PAUSE_RESUME
+```
+
+The repair removes avoidable zero-progress outcomes that it finds. Because it is bounded, it is not a proof that no other progress assignment exists.
+
+### 8.4 Oscillation and starvation
+
+A stateless optimiser can alternate between equivalent assignments as deadlines, battery values or waiting terms change. The active grant prevents this repeated pre-emption until the selected robot clears.
+
+After a grant is released, waiting age increases the secondary score of robots that have repeatedly been commanded to Pause. This is the classical scheduling technique of ageing. It reduces starvation where several alternatives remain feasible over time, but cannot create feasibility when physical constraints leave only zero progress.
+
+---
+
+## 9. Why pausing the lowest-priority robot can be wrong
+
+Assume a low-priority robot \(B\) is already occupying a junction and a high-priority robot \(H\) is approaching it.
+
+Suppose the geometry gives
+
+\[
+z_H\leq z_B,
+\]
+
+so \(H\) may move only if \(B\) also moves out of the blocking position, and
+
+\[
+z_B+z_H\leq1,
+\]
+
+so they may not both move during the same tick.
+
+These constraints imply
+
+\[
+z_H=0.
+\]
+
+The feasible alternatives are
+
+\[
+(z_B,z_H)=(0,0)
+\quad\text{or}\quad
+(1,0).
+\]
+
+The throughput-first objective selects
+
+\[
+(z_B,z_H)=(1,0).
+\]
+
+The lower-priority robot moves because completing its current movement is the only feasible way to release the constrained capacity. The higher-priority robot waits because its movement is infeasible at that tick.
+
+A rule that simply pauses the lowest-priority robot would select \((0,0)\), retain the blockage and unnecessarily stop the entire component.
+
+In classical OR terms, a low-priority job already holding a scarce resource may need to complete before a higher-priority job can begin.
+
+---
 
 ## 10. Engineering decisions and trade-offs
 
-### 10.1 Conservative oriented-rectangle geometry
+| Decision | Reason | Advantage | Limitation |
+|---|---|---|---|
+| One-tick binary model | matches the available `Pause`/`Resume` interface | small, explicit and easy to validate | does not optimise a long future horizon |
+| Conservative action envelopes | safety takes precedence over utilisation | simple and robust geometric test | false conflicts may reduce throughput |
+| Four pairwise assignments | paused occupancy creates more than mutual exclusion | captures exclusion, implication and already-unsafe states | current candidate generation is quadratic |
+| Connected-component decomposition | constraints are local in the conflict graph | smaller independent subproblems | a dense component may still be difficult |
+| Time-limited CP-SAT | exact formulation with controlled runtime | may prove optimality for small components | may return only an incumbent or none |
+| Deterministic heuristic fallback | service must continue without unbounded search | bounded and reproducible | may miss a feasible or better solution |
+| Persistent grants | prevent premature reversal | stable sequencing and less oscillation | a poor grant can temporarily reduce throughput |
+| Waiting-age fairness | reduce repeated postponement | transparent anti-starvation mechanism | cannot overcome infeasibility |
+| Independent final validation | protect against optimiser or graph defects | strong last safety barrier | repeats all-pairs geometric work |
+| Pure engine separated from RabbitMQ | isolate decision logic from I/O | deterministic unit testing and replay | requires explicit transport and service layers |
+| Structured per-tick trace | make decisions observable and reproducible | supports audit and diagnosis | increases log volume |
 
-The implementation uses exact oriented endpoint rectangles. Equal-heading
-translation uses their compensated buffered convex hull. Heading changes use
-the convex hull of endpoint squares based on the rectangle's circumscribed
-radius plus compensated margin, thereby covering intermediate headings under
-the one-step centre-motion model. Chord-apothem compensation prevents the
-finite Shapely round buffer from shrinking inside the requested margin. [T2]
+### 10.1 Alternatives not selected
 
-The trade-off is additional false conflict, particularly for heading changes.
-This conservatism is implemented and tested; formal physical continuous-time
-certification is not.
+#### Fixed-priority rule
 
-### 10.2 Component-wise solving
+A fixed priority order is easy to implement but does not represent asymmetric constraints, stale obstacles, blocking clearance or temporal order retention. It would be simpler but less general and easier to break with adversarial geometry.
 
-Pairwise no-goods express mutual exclusion, implication and already-unsafe
-all-Pause states in one binary form. Sorted connected components reduce each
-solver call while preserving the complete pairwise model. The fleet-wide
-validator provides a separate check against graph or solver integration errors,
-but shares the geometry implementation. [T3, T5, T9]
+#### Full multi-agent path finding or route replanning
 
-### 10.3 Transport-independent engine and observability
+Those methods choose routes. The assignment supplies routes and gives the monitor only `Pause`/`Resume` control. Implementing route planning would require a factory map, motion primitives and an interface for replacing paths, none of which are provided.
 
-`CollisionDecisionEngine.decide` performs no RabbitMQ access, logging, sleep or
-clock read. `CollisionMonitorService` supplies snapshots and explicit time,
-constructs action messages, publishes with bounded retries and records the tick
-trace. The trace contains observed ages, constraints, components, priorities,
-grants, solver timing, final actions, validation, alarms and publication
-failures. [T10, T12]
+#### Rolling-horizon MIP or CP
 
-## 11. Transport identity, delivery and restart
+A multi-period model could anticipate future blocking and optimise tardiness. It was not prioritised because it multiplies the model size by the horizon length and requires stronger assumptions about future movement, latency and state accuracy.
 
-The service creates exactly one logical decision for every known robot on each
-tick. A bounded publication retry reuses the same `ActionMessage`, but an
-ambiguous publisher-confirm failure can produce a duplicate broker delivery.
-RabbitMQ delivery is therefore at least once, not exactly once. [T12]
+#### Large Neighbourhood Search
 
-One `run_id` is created when the service instance starts and is included in
-every action and tick trace. The action idempotency key and RabbitMQ
-`message_id` are
+LNS is most useful for improving a large incumbent schedule. The implemented subproblems are small binary compatibility models. LNS would add tuning and stopping-policy complexity without addressing the first-order safety risks.
+
+#### Benders decomposition
+
+Benders decomposition would become meaningful after the factory is modelled as stable capacity-constrained zones, with a master problem for allocation or order and geometric subproblems for detailed feasibility. The present one-step pairwise model does not yet have a useful master/subproblem structure. Implementing valid cuts within the time budget would have displaced higher-value safety and testing work.
+
+---
+
+## 11. Improvements not implemented
+
+The improvements below are ordered by expected engineering value.
+
+### 11.1 Spatial broad phase
+
+**Reason for deferral:** exhaustive pairing is simple, transparent and adequate for the small assignment scenarios.
+
+**Proposed approach:**
+
+```text
+construct Pause and Resume envelopes
+insert one union bounding box per robot into a spatial index
+
+for each robot in deterministic order:
+    query potentially overlapping bounding boxes
+    add each unordered candidate pair to a sorted set
+
+for each candidate pair:
+    evaluate the four exact action combinations
+```
+
+The exact narrow-phase geometry and no-good model would remain unchanged.
+
+### 11.2 Global tick-budget allocation
+
+**Reason for deferral:** the current per-component CP-SAT limit already bounds the main unpredictable computation; a full end-to-end budget controller was lower priority than correctness.
+
+**Proposed approach:**
+
+```text
+tick_deadline = monotonic_now + configured_tick_budget
+reserve time for:
+    final validation,
+    trace construction,
+    action publication
+
+for component in deterministic order:
+    remaining = tick_deadline - monotonic_now
+
+    if remaining <= reserve:
+        use deterministic heuristic
+    else:
+        solver_limit = min(default_component_limit, remaining - reserve)
+        run CP-SAT with solver_limit
+
+validate the complete fleet decision
+publish the complete tick
+```
+
+### 11.3 Calibrated uncertainty and formal motion certification
+
+**Reason for deferral:** the case study does not provide localisation error, braking distance, tracking error or communication-latency bounds. Inventing them would not constitute a valid safety case.
+
+**Proposed approach:**
+
+```text
+collect certified bounds for:
+    position error,
+    heading error,
+    state age,
+    actuation latency,
+    controller tracking error,
+    braking displacement
+
+derive a pose tube over one decision interval
+compute a conservative occupied-set envelope for that tube
+apply a documented numerical guard
+validate against independent analytic and recorded cases
+configure the reviewed bound with recorded provenance
+```
+
+### 11.4 Rolling-horizon resource scheduling
+
+**Reason for deferral:** a one-step model plus continuation grants addresses the principal sequencing problem with much lower modelling and validation cost.
+
+**Proposed approach:**
+
+```text
+for each tick:
+    predict the next H route nodes for each robot
+    create binary movement variables z[i, tau]
+    add path-index transition constraints
+    add pairwise space-time conflict constraints
+    add grant-continuation and resource-capacity constraints
+    optimise:
+        safe progress,
+        deadline tardiness,
+        waiting,
+        action changes
+    solve within one global deadline
+    publish only the first-period action
+```
+
+### 11.5 Semantic conflict zones and decomposition
+
+**Reason for deferral:** no reviewed factory map or aisle topology was supplied.
+
+**Proposed approach:**
+
+```text
+offline:
+    buffer route segments by certified occupancy
+    intersect routes
+    cluster connected overlaps into candidate shared resources
+    define deterministic zone entries, exits and capacities
+    validate zones against the physical map
+
+online:
+    schedule access to the reviewed zones
+    use detailed geometry as a final feasibility check
+```
+
+Such zones could later support a rolling-horizon MIP, CP model or Benders-style decomposition.
+
+---
+
+## 12. Production deployment considerations
+
+The important scale is the number of robots within one coupled decision domain, not merely the organisation's total fleet.
+
+### 12.1 Ten robots
+
+Ten robots create
 
 \[
-(\text{run\_id},\text{device\_id},\text{tick\_id}).
+\binom{10}{2}=45
 \]
 
-Retries within a run retain the same key; equal process-local tick IDs from two
-runs do not collide. Consumers must deduplicate using the full key. [T12, T13]
+unordered pairs and at most 180 pairwise action-combination checks before final validation.
 
-The latest-state store, grants and waiting ages are process memory. After a
-restart, an unknown robot has no persisted pose and cannot safely be described
-as a stationary obstacle. The implemented service waits for received states;
-it does not publish an action for an unknown robot. Treating a robot as a
-stationary obstacle after restart would require a persisted pose or another
-trusted source, neither of which is implemented. [T10, T11]
+The present architecture is suitable after measured latency testing:
 
-## 12. Explicitly unimplemented refinements
+- one active monitor instance;
+- one RabbitMQ service with durable queues;
+- exhaustive pairwise construction;
+- CP-SAT for small components and deterministic fallback;
+- complete fleet-wide validation;
+- JSON tick traces and replayable scenarios;
+- optional passive standby with a single-writer lease.
 
-### 12.1 Automatic conflict-zone extraction
+Operational checks should include p50, p95 and p99 tick duration, stale-state alarms, publication failures, restart recovery and deterministic replay.
 
-The current system derives pairwise conflicts directly from action envelopes;
-it has no semantic conflict-zone model. [T3] A possible offline extraction
-process would be:
+### 12.2 One hundred robots
 
-```text
-buffer each route segment by the certified robot occupancy radius
-intersect buffered routes from different route definitions
-cluster connected overlaps into candidate conflict zones
-derive deterministic zone identifiers, entries and exits
-validate every zone against recorded trajectories and physical map data
-publish only reviewed zone metadata to the decision system
-```
+One hundred robots create
 
-This is not present in `src/collision_monitor`.
+\[
+\binom{100}{2}=4{,}950
+\]
 
-### 12.2 Calibrated uncertainty margins
+pairs and up to 19,800 action-combination checks before the final validator.
 
-The configured margin is currently a supplied scalar. It is not calculated
-from sensor or latency evidence. [T2] A calibration process would be:
+A single process may remain sufficient, but that must be demonstrated by load testing. I would introduce:
 
-```text
-collect bounded position, heading, state-age and controller-latency errors
-derive translational displacement during observation and actuation delay
-derive the radial effect of heading error for the robot rectangle
-combine the bounds using an agreed safety case, without assuming independence
-round the result upwards by the numerical geometry guard
-validate the margin against held-out measurements and worst-case tests
-configure the reviewed bound and record its provenance
-```
+- a spatial broad phase;
+- a global tick budget;
+- component-size and constraint-density metrics;
+- active/passive failover with one logical writer;
+- bounded queues and backpressure;
+- explicit handling of duplicate, delayed and out-of-order messages;
+- fault-injection tests for broker reconnect and partial publication.
 
-This process and its data are not implemented.
+Independent components could be solved concurrently only if results are collected deterministically and the complete fleet decision is still validated before publication.
 
-### 12.3 Formal continuous-time certification
+### 12.3 One thousand robots
 
-The implemented Resume envelope already covers intermediate headings under the
-straight-centre, one-step model, and its compensated polygonal buffer does not
-under-approximate the requested round margin. [T2] A stronger physical
-certificate would additionally bind the actual controller trajectory and
-uncertainty over continuous time:
-
-```text
-obtain a verified pose tube (p_x(tau), p_y(tau), theta(tau)) for tau in [0, 1]
-include calibrated localisation, timing, braking and tracking-error bounds
-prove that the occupied-set union is contained in a computable envelope
-prove pairwise separation of those envelopes, including boundary contact
-validate the implementation against independent analytic cases
-```
-
-No such certification is claimed by the present monitor.
-
-## 13. Fleet-size consequences of the implemented model
-
-### 13.1 Ten robots
-
-Ten known robots create \(\binom{10}{2}=45\) unordered pairs and 180 action
-combinations before the final validator. The implemented all-pairs approach is
-the code path exercised by the supplied scenarios. [T3, T15]
-
-### 13.2 One hundred robots
-
-One hundred known robots create \(\binom{100}{2}=4{,}950\) pairs and 19,800
-action combinations. The same code remains quadratic; this document makes no
-latency claim for that fleet size. [T3]
-
-### 13.3 One thousand robots
-
-One thousand known robots create
+One thousand robots create
 
 \[
 \binom{1000}{2}=499{,}500
 \]
 
-unordered pairs and 1,998,000 action-combination checks before the independent
-all-pairs validation. The present implementation remains a single all-pairs
-decision domain; it does not contain spatial ownership or distributed
-coordination. [T3, T9]
+pairs and almost two million action-combination checks before the independent validation repeats all-pairs work.
 
-A tick still creates one **logical** decision per known robot, so 1,000 known
-robots imply 1,000 logical action messages. RabbitMQ delivery is at least once,
-so retries may cause more than 1,000 physical deliveries. Every duplicate for
-that tick retains the key
-\((\text{run\_id},\text{device\_id},\text{tick\_id})\). [T12, T13]
+The current single-process \(O(n^2)\) implementation is not appropriate.
 
-No restart claim is made for robots whose poses have not been received in the
-new run. Without a persisted pose, an unknown robot cannot be inserted into the
-geometry as a stationary obstacle. [T11]
+A migration path would be:
 
-## 14. Testing and verification
+1. partition the factory into reviewed spatial cells or capacity-constrained zones;
+2. assign each zone to one deterministic decision owner;
+3. partition the state stream by current and near-future zone;
+4. solve local connected components within each owner;
+5. represent boundary movements as coupling constraints;
+6. require a destination reservation before authorising a cross-zone movement;
+7. maintain one logical publisher per robot;
+8. retain ordered events for replay and recovery;
+9. enforce bounded queues, backpressure and explicit overload behaviour.
 
-The final host suite recorded in the [final audit](final_audit.md) passed 213
-tests with one explicitly opt-in RabbitMQ test skipped. Coverage was 86%
-overall and 95% for
-`engine.py`. Ruff checking, Ruff format checking, mypy, `pip check` and
-`docker compose config` passed. The no-cache monitor image built successfully.
-The in-memory and RabbitMQ-backed three-way scenarios each completed in four
-ticks with all three robots at goal and no alarms. A later hermetic Compose run
-passed all 214 tests, including the live RabbitMQ round trip. [T15]
+A cross-zone protocol could be:
 
-The fixed-seed property-style tests cover footprint symmetry, every no-good
-truth table, input permutations, selected-envelope safety, component
-equivalence, solver and heuristic feasibility, grant retention, waiting-age
-ordering, stale actions, repair safety and current-overlap alarms. Focused
-tests cover intermediate-heading envelopes, buffer circumscription, restart
-identity, malformed input and trace contents. [T2–T13]
+```text
+source owner detects a proposed boundary movement
+source requests a time-limited reservation from destination owner
 
-## 15. Implementation traceability
+destination checks its local feasible region
 
-The following table is the reference for implemented-behaviour claims above.
-Every file, symbol and test name exists in the repository.
+if capacity is reserved:
+    source treats the reservation as a hard constraint
+    source may authorise Resume
+else:
+    source authorises Pause
 
-| ID | Implemented behaviour | Source and symbol | Regression test |
-|---|---|---|---|
-| T1 | Input models and next-pose selection | `models.py`: `RobotState`, `RobotSnapshot.from_state` | `test_models.py::test_next_pose_skips_a_first_node_matching_current_pose`; `test_empty_path_uses_current_pose_and_marks_robot_at_goal` |
-| T2 | Oriented footprint, intermediate-heading sweep, margin compensation and boundary conflict | `geometry.py`: `oriented_footprint`, `_conservative_buffer_distance`, `resume_envelope`, `geometries_conflict` | `test_geometry.py::test_resume_envelope_contains_intermediate_footprint_during_heading_change`; `test_polygonal_buffer_conservatively_contains_requested_round_margin`; `test_touching_rectangles_count_as_conflict` |
-| T3 | Every unordered pair, four assignments, no-goods and deterministic components | `conflicts.py`: `AllPairsCandidateGenerator.generate`, `evaluate_pairwise_compatibility`, `build_conflict_model`, `decompose_connected_components` | `test_conflicts.py::test_pairwise_compatibility_contains_all_diagnostics_and_is_immutable`; `test_component_and_pair_order_is_deterministic`; `test_safety_properties.py::test_component_solves_equal_the_whole_small_pairwise_model` |
-| T4 | Bounded secondary score and throughput dominance | `priority.py`: `priority_bounds`, `deadline_urgency`, `score_robot_priority` | `test_priority.py::test_one_extra_resume_dominates_all_secondary_score_differences`; `test_earlier_deadline_has_higher_urgency` |
-| T5 | CP-SAT clauses, deterministic tie-break, hard assignments and result validation | `optimiser.py`: `build_objective_encoding`, `validate_component_decisions`, `CpSatComponentOptimiser.optimise` | `test_optimiser.py::test_all_four_forbidden_patterns_are_encoded`; `test_robot_id_rank_breaks_an_equal_utility_tie_deterministically`; `test_hard_assignment_from_grant_is_enforced` |
-| T6 | Bounded greedy propagation, repair and independent validation | `heuristic.py`: `_propagate`, `DeterministicComponentHeuristic._greedy_pass`, `_repair_pass`, `validate_heuristic_decisions` | `test_heuristic.py::test_chain_of_implications_is_propagated`; `test_bounded_repair_prefers_highest_clearance_escape_robot`; `test_unsatisfiable_component_returns_explicit_no_assignment_result` |
-| T7 | Grant retention, merge handling, release and waiting fairness | `grants.py`: `GrantManager._safe_relevant_grants`, `_reconcile_lifecycle`, `_update_fairness` | `test_grants.py::test_alternating_raw_priority_does_not_preempt_active_grant`; `test_component_merge_preserves_oldest_compatible_grant`; `test_waiting_age_updates_reset_and_cap_fairly` |
-| T8 | All-Pause repair and explicit unresolved alarm | `grants.py`: `GrantManager._validate_or_repair_components`, `AlarmCode.UNRESOLVABLE_WITH_PAUSE_RESUME` | `test_grants.py::test_no_all_paused_repair_can_grant_implication_closed_group`; `test_unresolvable_component_returns_honest_alarm_and_fail_safe_pause` |
-| T9 | Policies, stale alarm and global safety override | `engine.py`: `CollisionDecisionEngine.decide`, `validate_global_safety`, `EngineAlarmCode.PROLONGED_STATE_LOSS_STATIC_OBSTACLE` | `test_engine.py::test_stale_robot_is_a_forced_stationary_obstacle`; `test_global_validator_overrides_a_broken_nominal_graph`; `test_service.py::test_stale_state_uses_monotonic_receive_age_and_is_paused`; `test_safety_properties.py::test_current_footprint_overlap_emits_explicit_critical_alarm` |
-| T10 | Pure engine and asynchronous service boundary | `engine.py`: `CollisionDecisionEngine.decide`; `service.py`: `CollisionMonitorService.run_tick` | `test_engine.py::test_identical_input_and_state_are_reproducible_regardless_of_input_order`; `test_service.py::test_periodic_loop_uses_configured_one_hertz_interval` |
-| T11 | Latest-state ordering, receive-time staleness and indefinite retention | `state_store.py`: `LatestStateStore.update`, `LatestStateStore.snapshot`; `service.py`: `CollisionMonitorService.ingest_payload` | `test_state_store.py::test_store_keeps_latest_source_timestamp_per_robot`; `test_snapshot_is_sorted_immutable_and_marks_stale_from_receive_age`; `test_service.py::test_stale_state_uses_monotonic_receive_age_and_is_paused` |
-| T12 | One logical action, bounded retry, `run_id` and tick trace | `service.py`: `CollisionMonitorService.__init__`, `_action_message`, `_publish_with_retry`, `_build_trace` | `test_service.py::test_each_tick_publishes_exactly_one_action_per_known_robot`; `test_publication_retries_then_succeeds_without_duplicate_success`; `test_trace_contains_deterministic_required_fields_without_wkt` |
-| T13 | Composite idempotency key and RabbitMQ message identity | `transport/base.py`: `ActionMessage.idempotency_key`; `transport/rabbitmq.py`: `RabbitMQTransport.publish_action` | `test_service.py::test_equal_tick_ids_from_different_service_runs_do_not_collide`; `test_rabbitmq_transport.py::test_publish_declares_durable_robot_queue_and_confirms_utf8_json` |
-| T14 | One-node-per-tick simulator semantics | `simulator/robot.py`: `SimulatedRobot.advance_for_tick`, `state_payload` | `test_simulator_robot.py::test_resume_advances_exactly_one_node_on_the_next_step`; `test_pause_keeps_current_pose_and_published_path_starts_there` |
-| T15 | Scenario and complete verification results | `simulator/scenario.py`: `run_scenario`, `run_in_memory_scenario`; `docs/final_audit.md`: `Commands actually run` | `test_simulator_scenarios.py::test_resolvable_scenarios_reach_goals_without_intersecting_actions`; `test_rabbitmq_integration.py::test_persistent_action_round_trip_against_live_rabbitmq` |
+after confirmed entry:
+    transfer decision ownership
+
+on timeout or disagreement:
+    authorise Pause and retry
+```
+
+Action delivery remains at least once. Each logical decision carries the restart-safe identity
+
+\[
+(\text{run\_id},\text{device\_id},\text{tick\_id}),
+\]
+
+so consumers can handle duplicates idempotently.
+
+The distributed protocol must first be validated in one process. Distribution should not be used to conceal an unverified local feasibility model.
+
+---
+
+## 13. Engineering architecture and observability
+
+The decision engine has no RabbitMQ dependency, sleeping or implicit wall-clock reads. It receives snapshots, `now_ms` and `tick_id` explicitly.
+
+The main implementation responsibilities are:
+
+| Module | Responsibility |
+|---|---|
+| `geometry.py` | oriented footprints and action envelopes |
+| `conflicts.py` | four-way pair compatibility and graph decomposition |
+| `priority.py` | bounded secondary scores and throughput dominance |
+| `optimiser.py` | time-limited CP-SAT model |
+| `heuristic.py` | deterministic propagation and repair |
+| `grants.py` | continuation grants, fairness and all-Pause handling |
+| `engine.py` | complete decision pipeline and global validation |
+| `state_store.py` | latest-state ordering and staleness |
+| `service.py` | ticks, publication retries and structured trace |
+| `transport/rabbitmq.py` | RabbitMQ-specific I/O |
+| `simulator/` | deterministic assignment scenarios |
+
+The per-tick trace records the information needed to reproduce and explain a decision:
+
+- source-state ages;
+- connected-component membership;
+- forbidden action combinations;
+- priority breakdowns;
+- active grants;
+- solver status, wall time and time limit;
+- final actions and reason codes;
+- safety-validation result;
+- alarms and publication failures.
+
+The service creates one logical decision for each known robot per tick. RabbitMQ publication is at least once because an ambiguous confirm failure may cause a retry and duplicate delivery. One `run_id` is generated for each process execution, and the action identity is
+
+\[
+(\text{run\_id},\text{device\_id},\text{tick\_id}).
+\]
+
+Retries within the same run retain the same identity; equal process-local tick numbers from separate runs do not collide.
+
+---
+
+## 14. Testing strategy and verification
+
+The test suite emphasises safety invariants rather than relying only on example scenarios.
+
+### 14.1 Focused and adversarial tests
+
+The tests cover:
+
+- footprint dimensions, rotations and boundary contact;
+- conservative translation and intermediate-heading envelopes;
+- conservative safety-margin buffering;
+- all four no-good truth tables;
+- deterministic component decomposition;
+- throughput dominance and deterministic tie-breaking;
+- CP-SAT and heuristic feasibility;
+- implication propagation and bounded repair;
+- grant acquisition, retention, release and merge behaviour;
+- alternating raw priorities under an active grant;
+- waiting-age ordering after grant release;
+- stale-state and out-of-order-state policies;
+- all-Pause repair;
+- already-overlapping current footprints;
+- malformed transport messages;
+- restart-safe action identity;
+- trace completeness and actual solver timing.
+
+### 14.2 Scenario and service tests
+
+The deterministic scenarios include:
+
+- no conflict;
+- two-robot perpendicular crossing;
+- the assignment's three-way junction;
+- the low-priority blocker;
+- a deliberately unresolvable arrangement;
+- stale-state handling.
+
+For resolvable scenarios, tests assert geometric safety and bounded goal completion. Asynchronous service tests cover arbitrary state arrival order, multiple updates before a tick, exactly one logical action per known robot, bounded publication retries and deterministic trace fields.
+
+The final reported verification was:
+
+- 213 tests passed;
+- one explicitly opt-in live RabbitMQ integration test skipped in the standard suite;
+- 86% overall coverage and 95% coverage for `engine.py`;
+- Ruff lint and format checks passed;
+- mypy passed;
+- `pip check` passed;
+- Docker Compose configuration validation passed;
+- a no-cache production image build passed;
+- in-memory and RabbitMQ-backed three-way scenarios each reached all goals in four ticks with no alarms.
+
+Coverage is evidence that code was exercised, not a direct correctness percentage. The more important evidence is the focused coverage of geometry, no-good construction, exact and heuristic feasibility, grants and the independent final validator.
+
+---
+
+## 15. Conclusion
+
+The implemented monitor is deliberately narrower than a complete fleet-management system. It solves the decision that the available interface actually permits: which robots may execute one fixed-route movement safely during the current tick.
+
+The approach can be stated:
+
+1. binary action variables describe Pause and Resume;
+2. pairwise geometry defines the feasible region;
+3. connected components decompose independent subproblems;
+4. a lexicographic objective maximises safe throughput before business priority;
+5. time-limited CP-SAT provides exact optimisation where practical;
+6. a deterministic bounded heuristic provides predictable fallback;
+7. continuation grants preserve a safe non-pre-emptive order;
+8. independent validation protects the published fleet decision.
+
+The principal trade-off is intentional. The model does not optimise a long planning horizon, but its hard constraints are explicit, its decisions are reproducible, its failure modes are honest and its scale limitations are clear. Within the time budget, that is a more defensible engineering result than a broader but weakly validated optimisation architecture.

@@ -73,9 +73,7 @@ def make_pair(
     compatibility = {
         assignment: assignment not in forbidden_set for assignment in ACTION_ASSIGNMENTS
     }
-    bounds = {
-        assignment: (DUMMY_BOUNDS, DUMMY_BOUNDS) for assignment in ACTION_ASSIGNMENTS
-    }
+    bounds = {assignment: (DUMMY_BOUNDS, DUMMY_BOUNDS) for assignment in ACTION_ASSIGNMENTS}
     return PairwiseCompatibility(
         robot_i=robot_i,
         robot_j=robot_j,
@@ -229,12 +227,8 @@ def test_robot_id_rank_breaks_an_equal_utility_tie_deterministically() -> None:
         "robot-b": simple_priority("robot-b"),
     }
 
-    first = CpSatComponentOptimiser(CONFIG).optimise(
-        ("robot-b", "robot-a"), model, priorities
-    )
-    second = CpSatComponentOptimiser(CONFIG).optimise(
-        ("robot-a", "robot-b"), model, priorities
-    )
+    first = CpSatComponentOptimiser(CONFIG).optimise(("robot-b", "robot-a"), model, priorities)
+    second = CpSatComponentOptimiser(CONFIG).optimise(("robot-a", "robot-b"), model, priorities)
 
     assert first.decisions == second.decisions
     assert first.decisions == {

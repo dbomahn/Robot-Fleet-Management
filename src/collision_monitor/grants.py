@@ -211,10 +211,7 @@ class GrantManager:
         """Convert the stale duration into a conservative whole-tick limit."""
         return max(
             1,
-            math.ceil(
-                self._config.stale_timeout_seconds
-                / self._config.tick_interval_seconds
-            ),
+            math.ceil(self._config.stale_timeout_seconds / self._config.tick_interval_seconds),
         )
 
     def _reconcile_lifecycle(
@@ -244,10 +241,7 @@ class GrantManager:
                     self._release(robot_id, GrantReleaseReason.STALE_OR_DISAPPEARED)
                 continue
 
-            if (
-                snapshot.stale
-                or now_ms - snapshot.received_at_ms >= stale_limit_ms
-            ):
+            if snapshot.stale or now_ms - snapshot.received_at_ms >= stale_limit_ms:
                 self._release(robot_id, GrantReleaseReason.STALE_OR_DISAPPEARED)
                 continue
             if snapshot.at_goal:
@@ -399,8 +393,7 @@ class GrantManager:
         for component in conflict_model.connected_components:
             component_ids = frozenset(component)
             if len(component) < 2 or not any(
-                conflict_model.adjacency.get(robot_id, frozenset())
-                for robot_id in component
+                conflict_model.adjacency.get(robot_id, frozenset()) for robot_id in component
             ):
                 continue
 
@@ -410,9 +403,7 @@ class GrantManager:
                 for robot_id, action in self._current_hard_assignments.items()
                 if robot_id in component_ids
             }
-            component_decisions = {
-                robot_id: decisions[robot_id] for robot_id in component
-            }
+            component_decisions = {robot_id: decisions[robot_id] for robot_id in component}
             if all(action is Action.PAUSE for action in component_decisions.values()):
                 repair_hard = {
                     **{

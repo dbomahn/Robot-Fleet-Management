@@ -41,11 +41,7 @@ def make_snapshot(
     received_at_ms: int = NOW_MS,
 ) -> RobotSnapshot:
     """Build one validated scenario snapshot."""
-    path = (
-        []
-        if next_x is None or next_y is None
-        else [{"x": next_x, "y": next_y, "theta": theta}]
-    )
+    path = [] if next_x is None or next_y is None else [{"x": next_x, "y": next_y, "theta": theta}]
     state = RobotState.model_validate(
         {
             "device_id": robot_id,
@@ -365,8 +361,7 @@ def test_global_validator_overrides_a_broken_nominal_graph() -> None:
     assert result.tick_metadata["state_committed"] is True
     assert EngineAlarmCode.GLOBAL_SAFETY_VALIDATION_FAILED in result.tick_metadata["alarms"]
     assert all(
-        decision.decision_source is DecisionSource.FAIL_SAFE
-        for decision in result.decisions
+        decision.decision_source is DecisionSource.FAIL_SAFE for decision in result.decisions
     )
 
 
@@ -386,7 +381,16 @@ def test_identical_input_and_state_are_reproducible_regardless_of_input_order() 
         "reproducible-tick",
     )
 
-    assert first == second
+    first_metadata = dict(first.tick_metadata)
+    second_metadata = dict(second.tick_metadata)
+    for metadata in (first_metadata, second_metadata):
+        metadata["component_diagnostics"] = tuple(
+            {key: value for key, value in component.items() if key != "wall_time_seconds"}
+            for component in metadata["component_diagnostics"]
+        )
+
+    assert first.decisions == second.decisions
+    assert first_metadata == second_metadata
 
 
 def test_large_component_uses_deterministic_heuristic() -> None:

@@ -76,3 +76,4 @@ def test_same_timestamp_uses_the_last_received_valid_state() -> None:
     assert result.accepted is True
     assert result.reason == "replaced_latest_state"
     assert store.latest("robot-a").state.x == 2.0
+    assert store.latest("robot-a").received_monotonic_seconds == 2.0

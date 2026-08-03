@@ -51,6 +51,7 @@ class MonitorConfig:
     publication_retry_delay_seconds: float = 0.050
     trace_detailed_geometry: bool = False
     log_level: str = "INFO"
+    log_format: str = "json"
     rabbitmq_url: str = "amqp://guest:guest@localhost/"
     rabbitmq_exchange_name: str = "collision_monitor"
     rabbitmq_state_queue: str = "collision_monitor.robot_states"
@@ -58,6 +59,7 @@ class MonitorConfig:
     rabbitmq_action_queue_prefix: str = "collision_monitor.robot_actions."
     rabbitmq_prefetch_count: int = 1
     rabbitmq_connection_timeout_seconds: float = 10.0
+    healthcheck_timeout_seconds: float = 2.0
     rabbitmq_reconnect_initial_delay_seconds: float = 1.0
     rabbitmq_reconnect_max_delay_seconds: float = 30.0
     cp_sat_time_limit_seconds: float = 0.050
@@ -68,7 +70,6 @@ class MonitorConfig:
     grant_minimum_hold_ticks: int = 2
     grant_maximum_hold_ticks: int = 10
     grant_clearance_release_ticks: int = 2
-    grant_waiting_age_weight: float = 1.0
     priority_base_progress_value: int = 10
     priority_loaded_bonus: int = 20
     priority_deadline_urgency_maximum: int = 100
@@ -90,9 +91,7 @@ class MonitorConfig:
         type_hints = get_type_hints(cls)
         values: dict[str, Any] = {}
         for field_definition in dataclass_fields(cls):
-            environment_name = (
-                f"{_ENVIRONMENT_PREFIX}{field_definition.name.upper()}"
-            )
+            environment_name = f"{_ENVIRONMENT_PREFIX}{field_definition.name.upper()}"
             raw_value = source.get(environment_name)
             if raw_value is None:
                 continue
@@ -105,6 +104,27 @@ class MonitorConfig:
 
     def __post_init__(self) -> None:
         """Reject configuration values that cannot produce meaningful decisions."""
+        finite_values = {
+            "robot_width_metres": self.robot_width_metres,
+            "robot_length_metres": self.robot_length_metres,
+            "safety_margin_metres": self.safety_margin_metres,
+            "pose_tolerance": self.pose_tolerance,
+            "tick_interval_seconds": self.tick_interval_seconds,
+            "stale_timeout_seconds": self.stale_timeout_seconds,
+            "publication_retry_delay_seconds": self.publication_retry_delay_seconds,
+            "rabbitmq_connection_timeout_seconds": self.rabbitmq_connection_timeout_seconds,
+            "healthcheck_timeout_seconds": self.healthcheck_timeout_seconds,
+            "rabbitmq_reconnect_initial_delay_seconds": (
+                self.rabbitmq_reconnect_initial_delay_seconds
+            ),
+            "rabbitmq_reconnect_max_delay_seconds": self.rabbitmq_reconnect_max_delay_seconds,
+            "cp_sat_time_limit_seconds": self.cp_sat_time_limit_seconds,
+            "priority_low_battery_threshold": self.priority_low_battery_threshold,
+        }
+        for name, value in finite_values.items():
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be finite")
+
         positive_values = {
             "robot_width_metres": self.robot_width_metres,
             "robot_length_metres": self.robot_length_metres,
@@ -112,15 +132,12 @@ class MonitorConfig:
             "tick_interval_seconds": self.tick_interval_seconds,
             "stale_timeout_seconds": self.stale_timeout_seconds,
             "cp_sat_time_limit_seconds": self.cp_sat_time_limit_seconds,
-            "rabbitmq_connection_timeout_seconds": (
-                self.rabbitmq_connection_timeout_seconds
-            ),
+            "rabbitmq_connection_timeout_seconds": (self.rabbitmq_connection_timeout_seconds),
+            "healthcheck_timeout_seconds": self.healthcheck_timeout_seconds,
             "rabbitmq_reconnect_initial_delay_seconds": (
                 self.rabbitmq_reconnect_initial_delay_seconds
             ),
-            "rabbitmq_reconnect_max_delay_seconds": (
-                self.rabbitmq_reconnect_max_delay_seconds
-            ),
+            "rabbitmq_reconnect_max_delay_seconds": (self.rabbitmq_reconnect_max_delay_seconds),
         }
         for name, value in positive_values.items():
             if value <= 0:
@@ -137,9 +154,7 @@ class MonitorConfig:
             not math.isfinite(self.publication_retry_delay_seconds)
             or self.publication_retry_delay_seconds < 0
         ):
-            raise ValueError(
-                "publication_retry_delay_seconds must be finite and non-negative"
-            )
+            raise ValueError("publication_retry_delay_seconds must be finite and non-negative")
         if not isinstance(self.trace_detailed_geometry, bool):
             raise ValueError("trace_detailed_geometry must be Boolean")
         if self.log_level.upper() not in {
@@ -150,6 +165,8 @@ class MonitorConfig:
             "DEBUG",
         }:
             raise ValueError("log_level must be a standard logging level")
+        if self.log_format.lower() not in {"json", "console"}:
+            raise ValueError("log_format must be 'json' or 'console'")
         parsed_rabbitmq_url = urlparse(self.rabbitmq_url)
         if parsed_rabbitmq_url.scheme not in {"amqp", "amqps"}:
             raise ValueError("rabbitmq_url must use the amqp or amqps scheme")
@@ -163,10 +180,7 @@ class MonitorConfig:
             raise ValueError("rabbitmq_state_routing_key must not be empty")
         if not self.rabbitmq_action_queue_prefix.strip():
             raise ValueError("rabbitmq_action_queue_prefix must not be empty")
-        if (
-            not isinstance(self.rabbitmq_prefetch_count, int)
-            or self.rabbitmq_prefetch_count < 1
-        ):
+        if not isinstance(self.rabbitmq_prefetch_count, int) or self.rabbitmq_prefetch_count < 1:
             raise ValueError("rabbitmq_prefetch_count must be a positive integer")
         if (
             self.rabbitmq_reconnect_max_delay_seconds
@@ -181,9 +195,7 @@ class MonitorConfig:
             not isinstance(self.heuristic_maximum_repair_candidates, int)
             or self.heuristic_maximum_repair_candidates < 1
         ):
-            raise ValueError(
-                "heuristic_maximum_repair_candidates must be a positive integer"
-            )
+            raise ValueError("heuristic_maximum_repair_candidates must be a positive integer")
         if not isinstance(self.cp_sat_random_seed, int) or self.cp_sat_random_seed < 0:
             raise ValueError("cp_sat_random_seed must be a non-negative integer")
         if not isinstance(self.cp_sat_log_search_progress, bool):
@@ -191,13 +203,9 @@ class MonitorConfig:
         if self.grant_minimum_hold_ticks < 0:
             raise ValueError("grant_minimum_hold_ticks must not be negative")
         if self.grant_maximum_hold_ticks < self.grant_minimum_hold_ticks:
-            raise ValueError(
-                "grant_maximum_hold_ticks must be at least grant_minimum_hold_ticks"
-            )
+            raise ValueError("grant_maximum_hold_ticks must be at least grant_minimum_hold_ticks")
         if self.grant_clearance_release_ticks < 1:
             raise ValueError("grant_clearance_release_ticks must be at least one")
-        if self.grant_waiting_age_weight < 0:
-            raise ValueError("grant_waiting_age_weight must not be negative")
 
         non_negative_integer_values = {
             "priority_base_progress_value": self.priority_base_progress_value,
@@ -209,9 +217,7 @@ class MonitorConfig:
             "priority_active_grant_continuation_bonus": (
                 self.priority_active_grant_continuation_bonus
             ),
-            "priority_clearance_bonus_per_conflict": (
-                self.priority_clearance_bonus_per_conflict
-            ),
+            "priority_clearance_bonus_per_conflict": (self.priority_clearance_bonus_per_conflict),
         }
         for name, value in non_negative_integer_values.items():
             if not isinstance(value, int) or value < 0:

@@ -28,9 +28,7 @@ def make_snapshot(
 ) -> RobotSnapshot:
     """Build a fresh snapshot with zero or one remaining movement step."""
     path = (
-        []
-        if following is None
-        else [{"x": following[0], "y": following[1], "theta": following[2]}]
+        [] if following is None else [{"x": following[0], "y": following[1], "theta": following[2]}]
     )
     state = RobotState.model_validate(
         {
@@ -82,9 +80,7 @@ def find_no_good(
     assignment: tuple[Action, Action],
 ) -> NoGoodConstraint:
     """Return the no-good retaining a requested source assignment."""
-    return next(
-        no_good for no_good in no_goods if no_good.source_assignment == assignment
-    )
+    return next(no_good for no_good in no_goods if no_good.source_assignment == assignment)
 
 
 def test_no_conflict_robots_are_isolated_singleton_components() -> None:
@@ -197,9 +193,7 @@ def test_low_priority_blocker_must_move_before_blocked_robot_can_move() -> None:
         (Action.RESUME, Action.PAUSE),
     )
     assert tuple(literal.forbidden_value for literal in forbidden.literals) == (1, 0)
-    assert forbidden.expression() == (
-        "x[robot-a-blocked] != 1 OR x[robot-z-blocker] != 0"
-    )
+    assert forbidden.expression() == ("x[robot-a-blocked] != 1 OR x[robot-z-blocker] != 0")
 
 
 def test_pairwise_compatibility_contains_all_diagnostics_and_is_immutable() -> None:

@@ -17,6 +17,7 @@ class InMemoryStateDelivery:
     def __init__(self, payload: Mapping[str, Any]) -> None:
         self._payload = dict(payload)
         self._settlement: str | None = None
+        self._settled_event = asyncio.Event()
 
     @property
     def payload(self) -> Mapping[str, Any]:
@@ -33,6 +34,7 @@ class InMemoryStateDelivery:
         if self._settlement is not None:
             raise RuntimeError("state delivery has already been settled")
         self._settlement = "acknowledged"
+        self._settled_event.set()
 
     async def reject(self, *, requeue: bool = False) -> None:
         """Record rejection and reject in-memory requeue requests."""
@@ -41,6 +43,14 @@ class InMemoryStateDelivery:
         if requeue:
             raise ValueError("in-memory state delivery does not support requeue")
         self._settlement = "rejected"
+        self._settled_event.set()
+
+    async def wait_settled(self) -> str:
+        """Wait until the service acknowledges or rejects this delivery."""
+        await self._settled_event.wait()
+        if self._settlement is None:
+            raise RuntimeError("settlement event completed without a settlement")
+        return self._settlement
 
 
 class InMemoryStateConsumer:
@@ -56,13 +66,14 @@ class InMemoryStateConsumer:
         """Return submitted deliveries for settlement assertions."""
         return tuple(self._deliveries)
 
-    async def submit(self, payload: Mapping[str, Any]) -> None:
+    async def submit(self, payload: Mapping[str, Any]) -> InMemoryStateDelivery:
         """Queue a copied payload, preserving submission order."""
         if self._closed:
             raise RuntimeError("cannot submit to a closed in-memory state consumer")
         delivery = InMemoryStateDelivery(payload)
         self._deliveries.append(delivery)
         await self._queue.put(delivery)
+        return delivery
 
     async def close(self) -> None:
         """End iteration after every already queued payload is consumed."""
@@ -89,7 +100,7 @@ class InMemoryActionPublisher:
         if any(count < 0 for count in configured_failures.values()):
             raise ValueError("configured publication failure counts must not be negative")
         self._remaining_failures = configured_failures
-        self._attempt_counts: dict[tuple[str, str], int] = {}
+        self._attempt_counts: dict[tuple[str, str, str], int] = {}
         self._published: list[ActionMessage] = []
 
     @property
@@ -98,18 +109,16 @@ class InMemoryActionPublisher:
         return tuple(self._published)
 
     @property
-    def attempt_counts(self) -> Mapping[tuple[str, str], int]:
-        """Return attempts keyed by ``(tick_id, device_id)``."""
+    def attempt_counts(self) -> Mapping[tuple[str, str, str], int]:
+        """Return attempts keyed by ``(run_id, device_id, tick_id)``."""
         return dict(self._attempt_counts)
 
     async def publish_action(self, message: ActionMessage) -> None:
         """Fail a configured number of attempts, then record the action."""
-        key = (message.tick_id, message.device_id)
+        key = message.idempotency_key
         self._attempt_counts[key] = self._attempt_counts.get(key, 0) + 1
         remaining = self._remaining_failures.get(message.device_id, 0)
         if remaining > 0:
             self._remaining_failures[message.device_id] = remaining - 1
-            raise RuntimeError(
-                f"injected publication failure for robot {message.device_id!r}"
-            )
+            raise RuntimeError(f"injected publication failure for robot {message.device_id!r}")
         self._published.append(message)

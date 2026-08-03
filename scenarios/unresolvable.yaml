@@ -1,0 +1,21 @@
+name: unresolvable_pause_resume
+description: Overlapping robots cannot be made safe using Pause and Resume alone.
+nominal_speed_mps: 1.0
+tick_interval_seconds: 1.0
+max_ticks: 5
+resolvable: false
+robots:
+  - device_id: robot-a
+    initial_pose: {x: 0.0, y: 0.0, theta: 0.0}
+    path:
+      - {x: 1.0, y: 0.0, theta: 0.0}
+    loaded: false
+    battery_level: 50.0
+    deadline_offset_ms: 60000
+  - device_id: robot-b
+    initial_pose: {x: 0.0, y: 0.0, theta: 0.0}
+    path:
+      - {x: -1.0, y: 0.0, theta: 0.0}
+    loaded: false
+    battery_level: 50.0
+    deadline_offset_ms: 60000

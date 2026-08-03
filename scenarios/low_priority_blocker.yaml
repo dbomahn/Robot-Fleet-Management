@@ -1,0 +1,21 @@
+name: low_priority_blocker
+description: A low-priority blocker inside the junction must move before an urgent robot.
+nominal_speed_mps: 1.0
+tick_interval_seconds: 1.0
+max_ticks: 10
+resolvable: true
+robots:
+  - device_id: approaching-high-priority
+    initial_pose: {x: -2.0, y: 0.0, theta: 0.0}
+    path:
+      - {x: 0.0, y: 0.0, theta: 0.0}
+    loaded: true
+    battery_level: 8.0
+    deadline_offset_ms: 0
+  - device_id: blocker-low-priority
+    initial_pose: {x: 0.0, y: 0.0, theta: 0.0}
+    path:
+      - {x: 2.0, y: 0.0, theta: 0.0}
+    loaded: false
+    battery_level: 90.0
+    deadline_offset_ms: 300000

@@ -30,11 +30,7 @@ def make_snapshot(
     following_x: float | None = None,
 ) -> RobotSnapshot:
     """Build a snapshot with configurable business-priority inputs."""
-    path = (
-        []
-        if following_x is None
-        else [{"x": following_x, "y": 0.0, "theta": 0.0}]
-    )
+    path = [] if following_x is None else [{"x": following_x, "y": 0.0, "theta": 0.0}]
     state = RobotState.model_validate(
         {
             "device_id": robot_id,
@@ -127,16 +123,13 @@ def test_low_battery_bonus_applies_only_below_threshold() -> None:
 def test_waiting_age_bonus_is_monotonic_and_capped() -> None:
     snapshot = make_snapshot("waiting")
     ages = (0, 1, 5, CONFIG.priority_waiting_age_cap_ticks, 10_000)
-    bonuses = tuple(
-        score(snapshot, waiting_age_ticks=age).waiting_age_bonus for age in ages
-    )
+    bonuses = tuple(score(snapshot, waiting_age_ticks=age).waiting_age_bonus for age in ages)
 
     assert bonuses == tuple(sorted(bonuses))
     assert bonuses[0] == 0
     assert bonuses[-1] == bonuses[-2]
     assert bonuses[-1] == (
-        CONFIG.priority_waiting_age_cap_ticks
-        * CONFIG.priority_waiting_age_bonus_per_tick
+        CONFIG.priority_waiting_age_cap_ticks * CONFIG.priority_waiting_age_bonus_per_tick
     )
 
 
@@ -197,9 +190,7 @@ def test_one_extra_resume_dominates_all_secondary_score_differences() -> None:
         make_snapshot("low-two", deadline=NOW_MS + 1_000_000),
         component_size=component_size,
     )
-    priorities = {
-        priority.robot_id: priority for priority in (high_priority, low_one, low_two)
-    }
+    priorities = {priority.robot_id: priority for priority in (high_priority, low_one, low_two)}
 
     one_resume = resumed_objective_value(priorities, {"high"})
     two_resumes = resumed_objective_value(priorities, {"low-one", "low-two"})

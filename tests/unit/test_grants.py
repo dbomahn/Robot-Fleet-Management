@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+import pytest
+
 from collision_monitor.config import MonitorConfig
 from collision_monitor.conflicts import (
     ACTION_ASSIGNMENTS,
@@ -68,12 +70,10 @@ def make_pair(
         robot_i=robot_i,
         robot_j=robot_j,
         compatibility={
-            assignment: assignment not in forbidden_set
-            for assignment in ACTION_ASSIGNMENTS
+            assignment: assignment not in forbidden_set for assignment in ACTION_ASSIGNMENTS
         },
         envelope_bounds={
-            assignment: (DUMMY_BOUNDS, DUMMY_BOUNDS)
-            for assignment in ACTION_ASSIGNMENTS
+            assignment: (DUMMY_BOUNDS, DUMMY_BOUNDS) for assignment in ACTION_ASSIGNMENTS
         },
     )
 
@@ -129,10 +129,7 @@ def priorities(
 ) -> dict[str, PriorityBreakdown]:
     """Build priorities for every observed robot."""
     values = utilities or {}
-    return {
-        robot_id: priority(robot_id, values.get(robot_id, 100))
-        for robot_id in robot_ids
-    }
+    return {robot_id: priority(robot_id, values.get(robot_id, 100)) for robot_id in robot_ids}
 
 
 def finalise(
@@ -330,9 +327,9 @@ def test_component_merge_preserves_oldest_compatible_grant() -> None:
     preparation = manager.prepare_tick(merged_model, now_ms=NOW_MS + 2_000)
 
     assert preparation.hard_assignments == {"robot-a": Action.RESUME}
-    assert tuple(
-        (release.robot_id, release.reason) for release in preparation.released_grants
-    ) == (("robot-c", GrantReleaseReason.COMPONENT_MERGE_CONFLICT),)
+    assert tuple((release.robot_id, release.reason) for release in preparation.released_grants) == (
+        ("robot-c", GrantReleaseReason.COMPONENT_MERGE_CONFLICT),
+    )
 
 
 def test_waiting_age_updates_reset_and_cap_fairly() -> None:
@@ -361,9 +358,7 @@ def test_waiting_age_updates_reset_and_cap_fairly() -> None:
 
     assert result.waiting_ages == {"robot-a": 1, "robot-b": 0, "robot-goal": 0}
 
-    second_model = make_model(
-        (make_snapshot("robot-b"), make_snapshot("robot-goal", at_goal=True))
-    )
+    second_model = make_model((make_snapshot("robot-b"), make_snapshot("robot-goal", at_goal=True)))
     manager.prepare_tick(second_model, now_ms=NOW_MS + 1_000)
     second = manager.finalise_tick(
         second_model,
@@ -384,7 +379,10 @@ def test_waiting_age_updates_reset_and_cap_fairly() -> None:
     assert capped.waiting_ages["robot-b"] == 2
 
 
-def test_alternating_raw_priority_does_not_preempt_active_grant() -> None:
+@pytest.mark.parametrize("challenger_utility", (201, 1_000))
+def test_alternating_raw_priority_does_not_preempt_active_grant(
+    challenger_utility: int,
+) -> None:
     manager = GrantManager(CONFIG)
     pair = make_pair("robot-a", "robot-b", (Action.RESUME, Action.RESUME))
     optimiser = CpSatComponentOptimiser(CONFIG)
@@ -403,7 +401,7 @@ def test_alternating_raw_priority_does_not_preempt_active_grant() -> None:
         raw_utilities = (
             {"robot-a": 200, "robot-b": 100}
             if tick % 2 == 1
-            else {"robot-a": 100, "robot-b": 200}
+            else {"robot-a": 100, "robot-b": challenger_utility}
         )
         scores = priorities(component, raw_utilities)
         solved = optimiser.optimise(
@@ -417,9 +415,7 @@ def test_alternating_raw_priority_does_not_preempt_active_grant() -> None:
             model,
             solved.decisions,
             scores,
-            proposed_sources={
-                robot_id: DecisionSource.CP_SAT for robot_id in component
-            },
+            proposed_sources={robot_id: DecisionSource.CP_SAT for robot_id in component},
         )
         assert final.decisions == {
             "robot-a": Action.RESUME,

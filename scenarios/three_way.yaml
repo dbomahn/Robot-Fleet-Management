@@ -1,0 +1,28 @@
+name: three_way_yellow_green_blue
+description: Yellow, Green and Blue traverse three intersecting radial lanes.
+nominal_speed_mps: 1.0
+tick_interval_seconds: 1.0
+max_ticks: 12
+resolvable: true
+robots:
+  - device_id: Blue
+    initial_pose: {x: 1.5, y: 0.0, theta: 0.0}
+    path:
+      - {x: -1.5, y: 0.0, theta: 0.0}
+    loaded: false
+    battery_level: 75.0
+    deadline_offset_ms: 90000
+  - device_id: Green
+    initial_pose: {x: -0.75, y: 1.299038106, theta: 2.094395102}
+    path:
+      - {x: 0.75, y: -1.299038106, theta: 2.094395102}
+    loaded: true
+    battery_level: 65.0
+    deadline_offset_ms: 75000
+  - device_id: Yellow
+    initial_pose: {x: -0.75, y: -1.299038106, theta: 4.188790205}
+    path:
+      - {x: 0.75, y: 1.299038106, theta: 4.188790205}
+    loaded: false
+    battery_level: 55.0
+    deadline_offset_ms: 120000
