@@ -170,22 +170,11 @@ for a very small numerical guard \(\varepsilon>0\). This makes the polygonal buf
 
 For `Pause`, the occupied region is the compensated buffered footprint at the current pose:
 
-$$
-E^0_{i,t}=F_{\delta'}(q_{i,t}).
-$$
+$$E^0_{i,t}=F_{\delta'}(q_{i,t}).$$
 
 For a `Resume` step with unchanged heading, the occupied region is
 
-$$
-E^1_{i,t}
-=
-\operatorname{conv}
-\left(
-F_{\delta'}(q_{i,t})
-\cup
-F_{\delta'}(\widehat q_{i,t})
-\right).
-$$
+$$E^1_{i,t}=\operatorname{conv}\left(F_{\delta'}(q_{i,t})\cup F_{\delta'}(\widehat q_{i,t})\right).$$
 
 This convex hull covers straight translation between the endpoint footprints.
 
@@ -912,7 +901,7 @@ on timeout or disagreement:
 Action delivery remains at least once. Each logical decision carries the restart-safe identity
 
 $$
-\(\text{run\_id},\text{device\_id},\text{tick\_id}\),
+(\text{run\_id},\text{device\_id},\text{tick\_id}),
 $$
 
 so consumers can handle duplicates idempotently.
