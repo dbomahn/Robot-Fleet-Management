@@ -912,7 +912,7 @@ on timeout or disagreement:
 Action delivery remains at least once. Each logical decision carries the restart-safe identity
 
 $$
-(\text{run\_id},\text{device\_id},\text{tick\_id}),
+\(\text{run\_id},\text{device\_id},\text{tick\_id}\),
 $$
 
 so consumers can handle duplicates idempotently.
@@ -956,7 +956,7 @@ The per-tick trace records the information needed to reproduce and explain a dec
 The service creates one logical decision for each known robot per tick. RabbitMQ publication is at least once because an ambiguous confirm failure may cause a retry and duplicate delivery. One `run_id` is generated for each process execution, and the action identity is
 
 $$
-(\text{run\_id},\text{device\_id},\text{tick\_id}).
+\(\text{run\_id},\text{device\_id},\text{tick\_id}\).
 $$
 
 Retries within the same run retain the same identity; equal process-local tick numbers from separate runs do not collide.
