@@ -174,7 +174,16 @@ $$E^0_{i,t}=F_{\delta'}(q_{i,t}).$$
 
 For a `Resume` step with unchanged heading, the occupied region is
 
-$$E^1_{i,t}=\operatorname{conv}\left(F_{\delta'}(q_{i,t})\cup F_{\delta'}(\widehat q_{i,t})\right).$$
+$$
+E^1_{i,t}
+=
+\mathrm{conv}
+\left(
+F_{\delta'}(q_{i,t})
+\cup
+F_{\delta'}(\widehat q_{i,t})
+\right).
+$$
 
 This convex hull covers straight translation between the endpoint footprints.
 
