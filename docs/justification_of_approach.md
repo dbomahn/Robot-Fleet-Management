@@ -89,7 +89,7 @@ This is an explicit and safe failure mode rather than an unsupported claim of un
 
 ### 3.1 State transition and decision variable
 
-Let \(\mathcal R_t\) be the set of robots known at tick \(t\). Robot \(i\)'s reported pose is
+Let $\mathcal R_t$ be the set of robots known at tick $t$. Robot $i$'s reported pose is
 
 $$
 q_{i,t} =
@@ -100,7 +100,7 @@ p^y_{i,t},
 \right),
 $$
 
-and \(\widehat q_{i,t}\) is the next pose derived from its remaining path.
+and $\widehat q_{i,t}$ is the next pose derived from its remaining path.
 
 Define the binary action variable
 
@@ -122,7 +122,7 @@ q_{i,t}, & z_{i,t}=0.
 \end{cases}
 $$
 
-This is not a route-planning model. The path and next node are inputs; \(z_{i,t}\) only controls whether the next movement is authorised during the present tick.
+This is not a route-planning model. The path and next node are inputs; $z_{i,t}$ only controls whether the next movement is authorised during the present tick.
 
 ### 3.2 Oriented footprint
 
@@ -138,7 +138,7 @@ $$
 W=0.630\ \mathrm m,
 $$
 
-centred at its reported pose. Before rotation, the length is aligned with the positive \(x\)-axis. For pose \(q=(p^x,p^y,\theta)\), the unbuffered footprint is
+centred at its reported pose. Before rotation, the length is aligned with the positive $x$-axis. For pose $q=(p^x,p^y,\theta)$, the unbuffered footprint is
 
 $$
 F(q)=
@@ -156,7 +156,7 @@ p^y
 \end{bmatrix}.
 $$
 
-A configurable margin \(\delta\geq0\) expands this footprint. Because Shapely represents a round buffer using polygonal chords, the implementation compensates the requested distance. With \(N\) segments per quadrant, it applies
+A configurable margin $\delta\geq0$ expands this footprint. Because Shapely represents a round buffer using polygonal chords, the implementation compensates the requested distance. With $N$ segments per quadrant, it applies
 
 $$
 \delta' =
@@ -164,7 +164,7 @@ $$
 (1+\varepsilon),
 $$
 
-for a very small numerical guard \(\varepsilon>0\). This makes the polygonal buffer circumscribe, rather than under-approximate, the requested round margin.
+for a very small numerical guard $\varepsilon>0$. This makes the polygonal buffer circumscribe, rather than under-approximate, the requested round margin.
 
 ### 3.3 Action-dependent occupied regions
 
@@ -174,9 +174,7 @@ $$E^0_{i,t}=F_{\delta'}(q_{i,t}).$$
 
 For a `Resume` step with unchanged heading, the occupied region is
 
-$$
-E^1_{i,t}
-=
+$$E^1_{i,t} =
 \mathrm{conv}
 \left(
 F_{\delta'}(q_{i,t})
@@ -194,7 +192,7 @@ $$
 \frac{1}{2}\sqrt{L^2+W^2}+\delta',
 $$
 
-constructs a square of half-size \(\rho\) at each endpoint centre, and takes the convex hull of those squares. This contains every rectangle orientation whose centre lies on the straight segment between the two poses.
+constructs a square of half-size $\rho$ at each endpoint centre, and takes the convex hull of those squares. This contains every rectangle orientation whose centre lies on the straight segment between the two poses.
 
 The heading-change envelope is intentionally conservative. It may create false conflicts and reduce throughput, but it avoids under-representing intermediate occupancy under the implemented one-step centre-motion model.
 
@@ -202,7 +200,7 @@ This geometry is not presented as a certified physical continuous-time safety ca
 
 ### 3.4 Pairwise compatibility and no-good constraints
 
-For every unordered pair \(\{i,j\}\), the monitor evaluates all four action combinations:
+For every unordered pair ${i,j}$, the monitor evaluates all four action combinations:
 
 $$
 (z_i,z_j)\in
@@ -213,24 +211,24 @@ A combination is unsafe if the corresponding occupied regions intersect. Each un
 
 | Unsafe assignment | Equivalent constraint |
 |---|---:|
-| \((z_i,z_j)=(0,0)\) | \(z_i+z_j\geq1\) |
-| \((z_i,z_j)=(0,1)\) | \(z_j\leq z_i\) |
-| \((z_i,z_j)=(1,0)\) | \(z_i\leq z_j\) |
-| \((z_i,z_j)=(1,1)\) | \(z_i+z_j\leq1\) |
+| $(z_i,z_j)=(0,0)$ | $z_i+z_j\geq1$ |
+| $(z_i,z_j)=(0,1)$ | $z_j\leq z_i$ |
+| $(z_i,z_j)=(1,0)$ | $z_i\leq z_j$ |
+| $(z_i,z_j)=(1,1)$ | $z_i+z_j\leq1$ |
 
-The familiar mutual-exclusion constraint \(z_i+z_j\leq1\) is therefore only one possible relation. The model also captures implications. For example,
+The familiar mutual-exclusion constraint $z_i+z_j\leq1$ is therefore only one possible relation. The model also captures implications. For example,
 
 $$
 z_i\leq z_j
 $$
 
-means that robot \(i\) may move only if robot \(j\) also moves out of its blocking position.
+means that robot $i$ may move only if robot $j$ also moves out of its blocking position.
 
-If \((0,0)\) is unsafe, the robots' current occupied regions already intersect. The new action decision cannot undo that observed violation instantaneously; the monitor raises a critical alarm and returns fail-safe Pause decisions.
+If $(0,0)$ is unsafe, the robots' current occupied regions already intersect. The new action decision cannot undo that observed violation instantaneously; the monitor raises a critical alarm and returns fail-safe Pause decisions.
 
 ### 3.5 Feasible region
 
-For a connected conflict component \(C\), let \(\mathcal N_C\) be its set of forbidden assignments and let \(\mathcal H_C\) contain valid hard assignments, such as stale robots forced to Pause or an active, geometrically valid grant forced to Resume.
+For a connected conflict component $C$, let $\mathcal N_C$ be its set of forbidden assignments and let $\mathcal H_C$ contain valid hard assignments, such as stale robots forced to Pause or an active, geometrically valid grant forced to Resume.
 
 The feasible region is
 
@@ -243,16 +241,16 @@ z\text{ satisfies every no-good in }\mathcal N_C
 \right\}.
 $$
 
-Deadlines, battery level, load state and waiting time do not relax these constraints. They are used only to choose among solutions already inside \(\mathcal F_C\).
+Deadlines, battery level, load state and waiting time do not relax these constraints. They are used only to choose among solutions already inside $\mathcal F_C$.
 
 ---
 
 ## 4. Conflict graph and decomposition
 
-The monitor builds an undirected graph \(G=(V,E)\):
+The monitor builds an undirected graph $G=(V,E)$:
 
 - one vertex represents one robot;
-- an edge \((i,j)\) is present if at least one of the four pairwise action assignments is unsafe.
+- an edge $(i,j)$ is present if at least one of the four pairwise action assignments is unsafe.
 
 A pair for which all four assignments are safe creates no edge.
 
@@ -283,7 +281,7 @@ A priority score cannot make an unsafe action feasible.
 
 ### 5.1 Primary objective
 
-For component \(C\), the first objective is
+For component $C$, the first objective is
 
 $$
 \max_{z\in\mathcal F_C}
@@ -313,13 +311,13 @@ The terms have the following meanings:
 
 | Term | OR interpretation | Practical role |
 |---|---|---|
-| \(V_0\) | base processing value | assigns positive value to progress |
-| \(V_i^{\mathrm{load}}\) | job-class weight | favours loaded robots |
-| \(U_i^{\mathrm{deadline}}\) | due-date urgency | increases as non-negative deadline slack decreases |
-| \(U_i^{\mathrm{battery}}\) | state-dependent urgency | applies below the configured battery threshold |
-| \(V_i^{\mathrm{wait}}\) | ageing term | increases with consecutive denied ticks, up to a cap |
-| \(V_i^{\mathrm{grant}}\) | sequence-continuation value | supports an active right-of-way decision |
-| \(V_i^{\mathrm{clear}}\) | blocking-clearance contribution | rewards movement that removes several conflicts |
+| $V_0$ | base processing value | assigns positive value to progress |
+| $V_i^{\mathrm{load}}$ | job-class weight | favours loaded robots |
+| $U_i^{\mathrm{deadline}}$ | due-date urgency | increases as non-negative deadline slack decreases |
+| $U_i^{\mathrm{battery}}$ | state-dependent urgency | applies below the configured battery threshold |
+| $V_i^{\mathrm{wait}}$ | ageing term | increases with consecutive denied ticks, up to a cap |
+| $V_i^{\mathrm{grant}}$ | sequence-continuation value | supports an active right-of-way decision |
+| $V_i^{\mathrm{clear}}$ | blocking-clearance contribution | rewards movement that removes several conflicts |
 
 The deadline, battery and waiting features are converted to bounded integers. This keeps the objective transparent, deterministic and suitable for CP-SAT.
 
@@ -331,14 +329,14 @@ The intended ordering is:
 2. subject to that, maximise aggregate secondary score;
 3. subject to both, use a deterministic robot-identifier rank.
 
-The implementation assigns a sufficiently large base reward \(M_C\) to every Resume decision:
+The implementation assigns a sufficiently large base reward $M_C$ to every Resume decision:
 
 $$
 \max_{z\in\mathcal F_C}
 \sum_{i\in C}(M_C+S_i)z_i.
 $$
 
-Let \(S_{\max}(C)\) be a valid upper bound on the total secondary score in component \(C\). Choosing
+Let $S_{\max}(C)$ be a valid upper bound on the total secondary score in component $C$. Choosing
 
 $$
 M_C>S_{\max}(C)
@@ -420,7 +418,7 @@ The heuristic protects the real-time service budget; it does not relax safety.
 
 ### 6.4 Why use a hybrid method?
 
-A fixed priority rule is fast but cannot correctly represent asymmetric implications such as \(z_i\leq z_j\). A single fleet-wide exact model is mathematically neat but its solution time depends on the size and density of the largest coupled conflict.
+A fixed priority rule is fast but cannot correctly represent asymmetric implications such as $z_i\leq z_j$. A single fleet-wide exact model is mathematically neat but its solution time depends on the size and density of the largest coupled conflict.
 
 The hybrid method uses exact optimisation where the local problem is small and predictable, and deterministic construction where it is not. This is a practical OR compromise between objective quality and computational reliability.
 
@@ -430,11 +428,11 @@ The hybrid method uses exact optimisation where the local problem is small and p
 
 Let:
 
-- \(n\) be the number of known robots;
-- \(m\) be the number of conflict-graph edges;
-- \(k\) be the size of one connected component;
-- \(p\) be the number of two-literal no-goods in that component;
-- \(r\) be the number of repair candidates actually examined.
+- $n$ be the number of known robots;
+- $m$ be the number of conflict-graph edges;
+- $k$ be the size of one connected component;
+- $p$ be the number of two-literal no-goods in that component;
+- $r$ be the number of repair candidates actually examined.
 
 ### 7.1 Pairwise model construction
 
@@ -454,12 +452,12 @@ $$
 
 After pairwise compatibility is available:
 
-- adjacency construction is \(O(n+m)\);
-- connected-component traversal is \(O(n+m)\), excluding deterministic sorting.
+- adjacency construction is $O(n+m)$;
+- connected-component traversal is $O(n+m)$, excluding deterministic sorting.
 
 ### 7.3 Exact optimisation
 
-Binary optimisation has exponential worst-case complexity in component size \(k\). No polynomial guarantee is claimed.
+Binary optimisation has exponential worst-case complexity in component size $k$. No polynomial guarantee is claimed.
 
 The practical degradation is controlled by the wall-time limit:
 
@@ -477,13 +475,13 @@ $$
 O\!\left(k^2(p+1)\right).
 $$
 
-The bounded repair pass examines at most \(r\) candidates, giving
+The bounded repair pass examines at most $r$ candidates, giving
 
 $$
 O\!\left(rk^2(p+1)\right).
 $$
 
-If the configured cap allows every robot to be examined, \(r\leq k\). Working memory is \(O(k+p)\).
+If the configured cap allows every robot to be examined, $r\leq k$. Working memory is $O(k+p)$.
 
 These are conservative implementation-level bounds, not claims about an idealised linear-time propagator.
 
@@ -517,23 +515,23 @@ The current design limits each exact component solve. A production improvement w
 
 ### 8.1 A premature reversal that creates a new blocking state
 
-Consider two robots \(A\) and \(B\) using the same narrow resource in opposite directions.
+Consider two robots $A$ and $B$ using the same narrow resource in opposite directions.
 
-At tick \(t\), a feasible order is
+At tick $t$, a feasible order is
 
 $$
 (z_A,z_B)=(1,0).
 $$
 
-Robot \(A\) starts clearing the resource while \(B\) waits.
+Robot $A$ starts clearing the resource while $B$ waits.
 
-Suppose a stateless policy reverses the order at tick \(t+1\) because \(B\)'s raw priority has become slightly higher:
+Suppose a stateless policy reverses the order at tick $t+1$ because $B$'s raw priority has become slightly higher:
 
 $$
 (1,0)\rightarrow(0,1).
 $$
 
-Robot \(A\) is now paused while still occupying capacity needed by \(B\). In the new geometry, the model may contain
+Robot $A$ is now paused while still occupying capacity needed by $B$. In the new geometry, the model may contain
 
 $$
 z_A\leq z_B,
@@ -613,7 +611,7 @@ After a grant is released, waiting age increases the secondary score of robots t
 
 ## 9. Why pausing the lowest-priority robot can be wrong
 
-Assume a low-priority robot \(B\) is already occupying a junction and a high-priority robot \(H\) is approaching it.
+Assume a low-priority robot $B$ is already occupying a junction and a high-priority robot $H$ is approaching it.
 
 Suppose the geometry gives
 
@@ -621,7 +619,7 @@ $$
 z_H\leq z_B,
 $$
 
-so \(H\) may move only if \(B\) also moves out of the blocking position, and
+so $H$ may move only if $B$ also moves out of the blocking position, and
 
 $$
 z_B+z_H\leq1,
@@ -651,7 +649,7 @@ $$
 
 The lower-priority robot moves because completing its current movement is the only feasible way to release the constrained capacity. The higher-priority robot waits because its movement is infeasible at that tick.
 
-A rule that simply pauses the lowest-priority robot would select \((0,0)\), retain the blockage and unnecessarily stop the entire component.
+A rule that simply pauses the lowest-priority robot would select $(0,0)$, retain the blockage and unnecessarily stop the entire component.
 
 In classical OR terms, a low-priority job already holding a scarce resource may need to complete before a higher-priority job can begin.
 
@@ -872,7 +870,7 @@ $$
 
 pairs and almost two million action-combination checks before the independent validation repeats all-pairs work.
 
-The current single-process \(O(n^2)\) implementation is not appropriate.
+The current single-process $O(n^2)$ implementation is not appropriate.
 
 A migration path would be:
 
@@ -909,9 +907,9 @@ on timeout or disagreement:
 
 Action delivery remains at least once. Each logical decision carries the restart-safe identity
 
-$$
-(\text{run\_id},\text{device\_id},\text{tick\_id}),
-$$
+
+(`run_id`, `device_id`, `tick_id`),
+
 
 so consumers can handle duplicates idempotently.
 
@@ -953,9 +951,8 @@ The per-tick trace records the information needed to reproduce and explain a dec
 
 The service creates one logical decision for each known robot per tick. RabbitMQ publication is at least once because an ambiguous confirm failure may cause a retry and duplicate delivery. One `run_id` is generated for each process execution, and the action identity is
 
-$$
-\(\text{run\_id},\text{device\_id},\text{tick\_id}\).
-$$
+(`run_id`, `device_id`, `tick_id`).
+
 
 Retries within the same run retain the same identity; equal process-local tick numbers from separate runs do not collide.
 
